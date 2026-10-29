@@ -7,9 +7,14 @@ import numpy as np
 from engine.application import Application
 from engine.game.player import Player
 from engine.world.voxel_world import (
-    BLOCK_COLORS,
+    _FACE_DATA,
     BLOCK_SAND,
     HOTBAR_BLOCKS,
+    TEXTURE_DIRT,
+    TEXTURE_GRASS_SIDE,
+    TEXTURE_GRASS_TOP,
+    TEXTURE_SAND,
+    TEXTURE_STONE,
     VoxelWorld,
 )
 
@@ -20,22 +25,47 @@ class VoxelWorldTests(unittest.TestCase):
         mesh = world.build_mesh()
 
         self.assertEqual(world.blocks.shape, (8, 8, 8))
-        self.assertEqual(mesh.shape, (8 * 8 * 2 * 6 + 4 * 8 * 2 * 6, 6))
+        self.assertEqual(mesh.shape, (1152, 7))
         self.assertTrue(world.is_solid(0, 0, 0))
         self.assertTrue(world.is_solid(0, 1, 0))
         self.assertFalse(world.is_solid(-1, 0, 0))
         self.assertFalse(world.is_solid(0, 2, 0))
 
-    def test_mesh_uses_distinct_colors_for_block_types(self) -> None:
+    def test_grass_mesh_uses_top_side_and_dirt_textures(self) -> None:
         world = VoxelWorld(size=8)
-        world.set_block((3, 3, 3), BLOCK_SAND)
         mesh = world.build_mesh()
 
-        sand_vertices = mesh[np.all(mesh[:, :3] >= (3, 3, 3), axis=1)]
-        self.assertTrue(len(sand_vertices))
-        self.assertTrue(
-            np.any(np.all(np.isclose(sand_vertices[:, 3:], BLOCK_COLORS[BLOCK_SAND]), axis=1))
-        )
+        self.assertIn(TEXTURE_GRASS_TOP, mesh[:, 5])
+        self.assertIn(TEXTURE_GRASS_SIDE, mesh[:, 5])
+        self.assertIn(TEXTURE_DIRT, mesh[:, 5])
+
+    def test_side_face_uvs_keep_texture_upright_on_each_side(self) -> None:
+        for normal, expected_u in (
+            ((1, 0, 0), (0.0, 0.0, 1.0, 1.0)),
+            ((-1, 0, 0), (0.0, 1.0, 1.0, 0.0)),
+            ((0, 0, 1), (0.0, 1.0, 1.0, 0.0)),
+            ((0, 0, -1), (0.0, 0.0, 1.0, 1.0)),
+        ):
+            corners = next(face[1] for face in _FACE_DATA if face[0] == normal)
+            uvs = VoxelWorld._face_uvs(normal, corners)
+            vertical_values = tuple(
+                uv[1] for corner, uv in zip(corners, uvs) if corner[1] == 0
+            )
+            self.assertEqual(vertical_values, (0.0, 0.0))
+            self.assertEqual(
+                tuple(uv[1] for corner, uv in zip(corners, uvs) if corner[1] == 1),
+                (1.0, 1.0),
+            )
+            self.assertEqual(tuple(uv[0] for uv in uvs), expected_u)
+
+    def test_block_mesh_uses_material_specific_texture_layers(self) -> None:
+        world = VoxelWorld(size=8)
+        world.set_block((3, 3, 3), BLOCK_SAND)
+        world.set_block((5, 3, 3), 3)
+        mesh = world.build_mesh()
+
+        self.assertIn(TEXTURE_SAND, mesh[:, 5])
+        self.assertIn(TEXTURE_STONE, mesh[:, 5])
 
     def test_raycast_returns_hit_and_adjacent_empty_block(self) -> None:
         world = VoxelWorld(size=8)

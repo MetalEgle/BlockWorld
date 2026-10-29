@@ -2,6 +2,11 @@ import numpy as np
 
 BlockPosition = tuple[int, int, int]
 BlockType = int
+TEXTURE_GRASS_TOP = 0
+TEXTURE_GRASS_SIDE = 1
+TEXTURE_DIRT = 2
+TEXTURE_STONE = 3
+TEXTURE_SAND = 4
 
 BLOCK_DIRT = 1
 BLOCK_GRASS = 2
@@ -33,7 +38,6 @@ _FACE_DATA = (
     ((0, 0, 1), ((0, 0, 1), (1, 0, 1), (1, 1, 1), (0, 1, 1)), 0.72),
     ((0, 0, -1), ((0, 0, 0), (0, 1, 0), (1, 1, 0), (1, 0, 0)), 0.64),
 )
-
 
 class VoxelWorld:
     """A small, flat voxel world stored as a NumPy block array."""
@@ -116,23 +120,52 @@ class VoxelWorld:
         return None
 
     def build_mesh(self) -> np.ndarray:
-        """Return visible block faces as interleaved position and color data."""
-        vertices: list[tuple[float, float, float, float, float, float]] = []
+        """Return visible faces as position, UV, texture layer, and shading data."""
+        vertices: list[tuple[float, float, float, float, float, float, float]] = []
 
         for x, y, z in np.argwhere(self.blocks):
             block_type = int(self.blocks[x, y, z])
-            base_color = BLOCK_COLORS[block_type]
             for (dx, dy, dz), corners, brightness in _FACE_DATA:
                 if self.is_solid(int(x + dx), int(y + dy), int(z + dz)):
                     continue
 
-                color = tuple(channel * brightness for channel in base_color)
+                texture_layer = self._texture_layer(block_type, (dx, dy, dz))
                 points = [
                     (x + corner[0], y + corner[1], z + corner[2])
                     for corner in corners
                 ]
+                uvs = self._face_uvs((dx, dy, dz), corners)
                 for index in (0, 1, 2, 0, 2, 3):
                     point = points[index]
-                    vertices.append((*point, *color))
+                    vertices.append(
+                        (*point, *uvs[index], float(texture_layer), brightness)
+                    )
 
-        return np.asarray(vertices, dtype=np.float32).reshape(-1, 6)
+        return np.asarray(vertices, dtype=np.float32).reshape(-1, 7)
+
+    @staticmethod
+    def _face_uvs(
+        normal: tuple[int, int, int],
+        corners: tuple[tuple[int, int, int], ...],
+    ) -> tuple[tuple[float, float], ...]:
+        if normal[1] != 0:
+            return tuple((float(x), float(z)) for x, _, z in corners)
+
+        horizontal_axis = 2 if normal[0] != 0 else 0
+        return tuple((float(corner[horizontal_axis]), float(corner[1])) for corner in corners)
+
+    @staticmethod
+    def _texture_layer(block_type: BlockType, normal: tuple[int, int, int]) -> int:
+        if block_type == BLOCK_GRASS:
+            if normal == (0, 1, 0):
+                return TEXTURE_GRASS_TOP
+            if normal == (0, -1, 0):
+                return TEXTURE_DIRT
+            return TEXTURE_GRASS_SIDE
+        if block_type == BLOCK_DIRT:
+            return TEXTURE_DIRT
+        if block_type == BLOCK_STONE:
+            return TEXTURE_STONE
+        if block_type == BLOCK_SAND:
+            return TEXTURE_SAND
+        raise ValueError(f"Неизвестный тип блока: {block_type}.")
