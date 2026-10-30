@@ -6,6 +6,7 @@ import numpy as np
 
 from engine.application import Application
 from engine.game.player import Player
+from engine.graphics.hud import Hud
 from engine.world.voxel_world import (
     _FACE_DATA,
     BLOCK_SAND,
@@ -219,6 +220,185 @@ class HotbarTests(unittest.TestCase):
 
         self.assertFalse(world.is_solid(*adjacent_block))
         self.app.renderer.update_mesh.assert_not_called()
+
+
+class PauseMenuTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.app = Application()
+        self.app.window = Mock()
+
+    def test_pause_menu_buttons_are_ordered_top_to_bottom(self) -> None:
+        button_bounds = Hud._menu_button_bounds(1280, 720)
+
+        self.assertGreater(button_bounds[0][1], button_bounds[1][1])
+        self.assertGreater(button_bounds[1][1], button_bounds[2][1])
+
+    @patch("engine.application.glfw.set_cursor_pos")
+    @patch("engine.application.glfw.get_window_size", return_value=(1280, 720))
+    @patch("engine.application.glfw.get_framebuffer_size", return_value=(1280, 720))
+    @patch("engine.application.glfw.set_input_mode")
+    def test_escape_opens_and_closes_pause_menu(
+        self,
+        set_input_mode: Mock,
+        _framebuffer_size: Mock,
+        _window_size: Mock,
+        set_cursor_pos: Mock,
+    ) -> None:
+        self.app._on_key(None, glfw.KEY_ESCAPE, 0, glfw.PRESS, 0)
+
+        self.assertTrue(self.app.menu_open)
+        set_input_mode.assert_called_once_with(
+            self.app.window, glfw.CURSOR, glfw.CURSOR_NORMAL
+        )
+        continue_x, continue_y, continue_width, continue_height = (
+            Hud._menu_button_bounds(1280, 720)[0]
+        )
+        set_cursor_pos.assert_called_once_with(
+            self.app.window,
+            continue_x + continue_width / 2,
+            720 - continue_y - continue_height / 2,
+        )
+
+        self.app._on_key(None, glfw.KEY_ESCAPE, 0, glfw.PRESS, 0)
+
+        self.assertFalse(self.app.menu_open)
+        set_input_mode.assert_called_with(
+            self.app.window, glfw.CURSOR, glfw.CURSOR_DISABLED
+        )
+
+    @patch("engine.application.glfw.get_cursor_pos", return_value=(640.0, 360.0))
+    @patch("engine.application.glfw.get_window_size", return_value=(1280, 720))
+    @patch("engine.application.glfw.get_framebuffer_size", return_value=(1280, 720))
+    def test_settings_button_opens_page_and_escape_returns_to_menu(
+        self,
+        _framebuffer_size: Mock,
+        _window_size: Mock,
+        _cursor_pos: Mock,
+    ) -> None:
+        self.app.menu_open = True
+        self.app._on_mouse_button(
+            self.app.window, glfw.MOUSE_BUTTON_LEFT, glfw.PRESS, 0
+        )
+
+        self.assertTrue(self.app.menu_open)
+        self.assertTrue(self.app.settings_open)
+
+        self.app._on_key(None, glfw.KEY_ESCAPE, 0, glfw.PRESS, 0)
+        self.assertTrue(self.app.menu_open)
+        self.assertFalse(self.app.settings_open)
+
+    @patch("engine.application.glfw.get_cursor_pos")
+    @patch("engine.application.glfw.get_window_size", return_value=(1280, 720))
+    @patch("engine.application.glfw.get_framebuffer_size", return_value=(1280, 720))
+    def test_texture_setting_click_updates_renderer(
+        self,
+        _framebuffer_size: Mock,
+        _window_size: Mock,
+        get_cursor_pos: Mock,
+    ) -> None:
+        button_x, button_y, button_width, button_height = (
+            Hud._settings_choice_bounds(1280, 720, 0)[2]
+        )
+        get_cursor_pos.return_value = (
+            button_x + button_width / 2,
+            720 - button_y - button_height / 2,
+        )
+        self.app.menu_open = True
+        self.app.settings_open = True
+        self.app.renderer = Mock()
+
+        self.app._on_mouse_button(
+            self.app.window, glfw.MOUSE_BUTTON_LEFT, glfw.PRESS, 0
+        )
+
+        self.assertEqual(self.app.texture_quality, 2)
+        self.app.renderer.set_texture_quality.assert_called_once_with(2)
+
+    @patch("engine.application.glfw.get_cursor_pos")
+    @patch("engine.application.glfw.get_window_size", return_value=(1280, 720))
+    @patch("engine.application.glfw.get_framebuffer_size", return_value=(1280, 720))
+    def test_shadow_setting_can_disable_shadows(
+        self,
+        _framebuffer_size: Mock,
+        _window_size: Mock,
+        get_cursor_pos: Mock,
+    ) -> None:
+        button_x, button_y, button_width, button_height = (
+            Hud._settings_choice_bounds(1280, 720, 1)[0]
+        )
+        get_cursor_pos.return_value = (
+            button_x + button_width / 2,
+            720 - button_y - button_height / 2,
+        )
+        self.app.menu_open = True
+        self.app.settings_open = True
+        self.app.renderer = Mock()
+
+        self.app._on_mouse_button(
+            self.app.window, glfw.MOUSE_BUTTON_LEFT, glfw.PRESS, 0
+        )
+
+        self.assertEqual(self.app.shadow_quality, 0)
+        self.app.renderer.set_shadow_quality.assert_called_once_with(0)
+
+    def test_settings_page_maps_quality_choices(self) -> None:
+        texture_bounds = Hud._settings_choice_bounds(1280, 720, 0)[1]
+        shadow_bounds = Hud._settings_choice_bounds(1280, 720, 1)[0]
+
+        self.assertEqual(
+            Hud.settings_option_at(
+                1280,
+                720,
+                texture_bounds[0] + texture_bounds[2] / 2,
+                texture_bounds[1] + texture_bounds[3] / 2,
+            ),
+            (0, 1),
+        )
+        self.assertEqual(
+            Hud.settings_option_at(
+                1280,
+                720,
+                shadow_bounds[0] + shadow_bounds[2] / 2,
+                shadow_bounds[1] + shadow_bounds[3] / 2,
+            ),
+            (1, 0),
+        )
+
+    @patch("engine.application.glfw.get_cursor_pos", return_value=(640.0, 306.0))
+    @patch("engine.application.glfw.get_window_size", return_value=(1280, 720))
+    @patch("engine.application.glfw.get_framebuffer_size", return_value=(1280, 720))
+    @patch("engine.application.glfw.set_input_mode")
+    def test_resume_button_closes_pause_menu(
+        self,
+        _set_input_mode: Mock,
+        _framebuffer_size: Mock,
+        _window_size: Mock,
+        _cursor_pos: Mock,
+    ) -> None:
+        self.app.menu_open = True
+        self.app._on_mouse_button(
+            self.app.window, glfw.MOUSE_BUTTON_LEFT, glfw.PRESS, 0
+        )
+
+        self.assertFalse(self.app.menu_open)
+
+    @patch("engine.application.glfw.get_cursor_pos", return_value=(640.0, 414.0))
+    @patch("engine.application.glfw.get_window_size", return_value=(1280, 720))
+    @patch("engine.application.glfw.get_framebuffer_size", return_value=(1280, 720))
+    @patch("engine.application.glfw.set_window_should_close")
+    def test_exit_button_requests_window_close(
+        self,
+        set_window_should_close: Mock,
+        _framebuffer_size: Mock,
+        _window_size: Mock,
+        _cursor_pos: Mock,
+    ) -> None:
+        self.app.menu_open = True
+        self.app._on_mouse_button(
+            self.app.window, glfw.MOUSE_BUTTON_LEFT, glfw.PRESS, 0
+        )
+
+        set_window_should_close.assert_called_once_with(self.app.window, True)
 
 
 if __name__ == "__main__":
