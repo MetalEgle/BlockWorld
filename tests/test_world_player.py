@@ -9,13 +9,26 @@ from engine.game.player import Player
 from engine.graphics.hud import Hud
 from engine.world.voxel_world import (
     _FACE_DATA,
+    BLOCK_DIRT,
+    BLOCK_GRASS,
+    BLOCK_LEAF,
     BLOCK_SAND,
+    BLOCK_STONE_BRICKS,
+    BLOCK_STONE_COBBLE,
+    BLOCK_WOOD,
+    BLOCK_WOOD_BOARD,
     HOTBAR_BLOCKS,
     TEXTURE_DIRT,
     TEXTURE_GRASS_SIDE,
     TEXTURE_GRASS_TOP,
+    TEXTURE_LEAF,
     TEXTURE_SAND,
     TEXTURE_STONE,
+    TEXTURE_STONE_BRICKS,
+    TEXTURE_STONE_COBBLE,
+    TEXTURE_WOOD_SIDE,
+    TEXTURE_WOOD_TOP,
+    TEXTURE_WOOD_BOARD,
     VoxelWorld,
 )
 
@@ -67,6 +80,42 @@ class VoxelWorldTests(unittest.TestCase):
 
         self.assertIn(TEXTURE_SAND, mesh[:, 5])
         self.assertIn(TEXTURE_STONE, mesh[:, 5])
+
+    def test_new_hotbar_blocks_use_their_texture_layers(self) -> None:
+        world = VoxelWorld(size=8)
+        blocks_and_layers = (
+            (BLOCK_LEAF, TEXTURE_LEAF),
+            (BLOCK_STONE_BRICKS, TEXTURE_STONE_BRICKS),
+            (BLOCK_STONE_COBBLE, TEXTURE_STONE_COBBLE),
+        )
+        for index, (block_type, texture_layer) in enumerate(blocks_and_layers):
+            world.set_block((2 + index * 2, 4, 3), block_type)
+
+        wood_position = (7, 4, 3)
+        world.set_block(wood_position, BLOCK_WOOD)
+        mesh = world.build_mesh()
+
+        for block_type, texture_layer in blocks_and_layers:
+            self.assertIn(block_type, HOTBAR_BLOCKS)
+            self.assertIn(texture_layer, mesh[:, 5])
+        self.assertIn(BLOCK_WOOD, HOTBAR_BLOCKS)
+        wood_vertices = mesh[
+            (mesh[:, 0] >= wood_position[0])
+            & (mesh[:, 0] <= wood_position[0] + 1)
+            & (mesh[:, 1] >= wood_position[1])
+            & (mesh[:, 1] <= wood_position[1] + 1)
+            & (mesh[:, 2] >= wood_position[2])
+            & (mesh[:, 2] <= wood_position[2] + 1)
+        ]
+        self.assertIn(TEXTURE_WOOD_SIDE, wood_vertices[:, 5])
+        self.assertIn(TEXTURE_WOOD_TOP, wood_vertices[:, 5])
+
+    def test_wood_board_is_available_in_hotbar_and_uses_its_texture(self) -> None:
+        world = VoxelWorld(size=8)
+        world.set_block((3, 4, 3), BLOCK_WOOD_BOARD)
+
+        self.assertEqual(HOTBAR_BLOCKS[8], BLOCK_WOOD_BOARD)
+        self.assertIn(TEXTURE_WOOD_BOARD, world.build_mesh()[:, 5])
 
     def test_raycast_returns_hit_and_adjacent_empty_block(self) -> None:
         world = VoxelWorld(size=8)
@@ -203,23 +252,56 @@ class HotbarTests(unittest.TestCase):
         self.assertEqual(renderer.update_mesh.call_count, 2)
         self.assertTrue(world.is_solid(*hit_block))
 
-    def test_empty_hotbar_slot_does_not_place_a_block(self) -> None:
+    @patch.object(Player, "intersects_block", return_value=False)
+    def test_ninth_hotbar_slot_places_wood_board(
+        self, _intersects_block: Mock
+    ) -> None:
         player = self.app.player
         world = self.app.world
         assert player is not None and world is not None
-        target = world.raycast(player.eye_position(), player.forward_direction(), 6.0)
-        self.assertIsNotNone(target)
-        assert target is not None
-        _, adjacent_block = target
-        self.assertIsNotNone(adjacent_block)
-        assert adjacent_block is not None
-
-        empty_slot_key = glfw.KEY_1 + HOTBAR_BLOCKS.index(None)
-        self.app._on_key(None, empty_slot_key, 0, glfw.PRESS, 0)
+        adjacent_block = (10, 2, 10)
+        world.raycast = Mock(return_value=((10, 1, 10), adjacent_block))
+        self.app._on_key(None, glfw.KEY_9, 0, glfw.PRESS, 0)
         self.app._on_mouse_button(None, glfw.MOUSE_BUTTON_RIGHT, glfw.PRESS, 0)
 
-        self.assertFalse(world.is_solid(*adjacent_block))
-        self.app.renderer.update_mesh.assert_not_called()
+        self.assertEqual(world.blocks[adjacent_block], BLOCK_WOOD_BOARD)
+        self.app.renderer.update_mesh.assert_called_once()
+
+    @patch.object(Player, "intersects_block", return_value=False)
+    def test_placing_grass_on_grass_turns_lower_block_into_dirt(
+        self, _intersects_block: Mock
+    ) -> None:
+        world = self.app.world
+        assert world is not None
+        hit_block = (10, 0, 10)
+        placed_block = (10, 2, 10)
+        lower_block = (10, 1, 10)
+        world.blocks[lower_block] = BLOCK_GRASS
+        world.raycast = Mock(return_value=(hit_block, placed_block))
+
+        self.app._on_mouse_button(None, glfw.MOUSE_BUTTON_RIGHT, glfw.PRESS, 0)
+
+        self.assertEqual(world.blocks[placed_block], BLOCK_GRASS)
+        self.assertEqual(world.blocks[lower_block], BLOCK_DIRT)
+        self.app.renderer.update_mesh.assert_called_once()
+
+    @patch.object(Player, "intersects_block", return_value=False)
+    def test_placing_non_grass_on_grass_keeps_lower_block_unchanged(
+        self, _intersects_block: Mock
+    ) -> None:
+        world = self.app.world
+        assert world is not None
+        hit_block = (10, 0, 10)
+        placed_block = (10, 2, 10)
+        lower_block = (10, 1, 10)
+        world.blocks[lower_block] = BLOCK_GRASS
+        world.raycast = Mock(return_value=(hit_block, placed_block))
+        self.app.selected_hotbar_slot = HOTBAR_BLOCKS.index(BLOCK_SAND)
+
+        self.app._on_mouse_button(None, glfw.MOUSE_BUTTON_RIGHT, glfw.PRESS, 0)
+
+        self.assertEqual(world.blocks[placed_block], BLOCK_SAND)
+        self.assertEqual(world.blocks[lower_block], BLOCK_GRASS)
 
 
 class PauseMenuTests(unittest.TestCase):

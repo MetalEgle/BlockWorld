@@ -12,7 +12,7 @@ from OpenGL.GL import (
 from engine.graphics.hud import Hud
 from engine.graphics.renderer import Renderer
 from engine.game.player import Player
-from engine.world.voxel_world import HOTBAR_BLOCKS, VoxelWorld
+from engine.world.voxel_world import BLOCK_DIRT, BLOCK_GRASS, HOTBAR_BLOCKS, VoxelWorld
 
 
 class Application:
@@ -240,6 +240,16 @@ class Application:
                 if block_type is not None
                 else False
             )
+            if changed and block_type == BLOCK_GRASS:
+                below_block = (
+                    adjacent_block[0],
+                    adjacent_block[1] - 1,
+                    adjacent_block[2],
+                )
+                if world.is_solid(*below_block) and (
+                    world.blocks[below_block] == BLOCK_GRASS
+                ):
+                    world.set_block(below_block, BLOCK_DIRT)
         else:
             changed = False
 

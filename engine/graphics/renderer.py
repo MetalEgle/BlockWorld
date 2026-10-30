@@ -84,16 +84,28 @@ from engine.world.voxel_world import (
     TEXTURE_DIRT,
     TEXTURE_GRASS_SIDE,
     TEXTURE_GRASS_TOP,
+    TEXTURE_LEAF,
     TEXTURE_SAND,
     TEXTURE_STONE,
+    TEXTURE_STONE_BRICKS,
+    TEXTURE_STONE_COBBLE,
+    TEXTURE_WOOD_SIDE,
+    TEXTURE_WOOD_TOP,
+    TEXTURE_WOOD_BOARD,
 )
 
 _TEXTURE_FILES = (
     "Grass_Top.jfif",
     "Grass_Side.jfif",
     "Dirt.jfif",
-    "Gemini_Generated_Image_cjzo89cjzo89cjzo (2).jfif",
+    "Stone.jfif",
     "Send.jfif",
+    "Leaf.jfif",
+    "Stone_Briks.jfif",
+    "Stone_Cobble.jfif",
+    "Wood_Side.jfif",
+    "Wood_Top.jfif",
+    "Wood_Board.jfif",
 )
 
 _TEXTURE_LAYERS = (
@@ -102,6 +114,12 @@ _TEXTURE_LAYERS = (
     TEXTURE_DIRT,
     TEXTURE_STONE,
     TEXTURE_SAND,
+    TEXTURE_LEAF,
+    TEXTURE_STONE_BRICKS,
+    TEXTURE_STONE_COBBLE,
+    TEXTURE_WOOD_SIDE,
+    TEXTURE_WOOD_TOP,
+    TEXTURE_WOOD_BOARD,
 )
 
 
