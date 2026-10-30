@@ -7,27 +7,43 @@ TEXTURE_GRASS_SIDE = 1
 TEXTURE_DIRT = 2
 TEXTURE_STONE = 3
 TEXTURE_SAND = 4
+TEXTURE_LEAF = 5
+TEXTURE_STONE_BRICKS = 6
+TEXTURE_STONE_COBBLE = 7
+TEXTURE_WOOD_SIDE = 8
+TEXTURE_WOOD_TOP = 9
+TEXTURE_WOOD_BOARD = 10
 
 BLOCK_DIRT = 1
 BLOCK_GRASS = 2
 BLOCK_STONE = 3
 BLOCK_SAND = 4
+BLOCK_LEAF = 5
+BLOCK_STONE_BRICKS = 6
+BLOCK_STONE_COBBLE = 7
+BLOCK_WOOD = 8
+BLOCK_WOOD_BOARD = 9
 BLOCK_COLORS: dict[BlockType, tuple[float, float, float]] = {
     BLOCK_DIRT: (0.50, 0.32, 0.18),
     BLOCK_GRASS: (0.35, 0.72, 0.29),
     BLOCK_STONE: (0.52, 0.55, 0.57),
     BLOCK_SAND: (0.78, 0.68, 0.39),
+    BLOCK_LEAF: (0.25, 0.58, 0.22),
+    BLOCK_STONE_BRICKS: (0.54, 0.56, 0.58),
+    BLOCK_STONE_COBBLE: (0.48, 0.50, 0.52),
+    BLOCK_WOOD: (0.58, 0.39, 0.20),
+    BLOCK_WOOD_BOARD: (0.68, 0.48, 0.27),
 }
 HOTBAR_BLOCKS: tuple[BlockType | None, ...] = (
     BLOCK_GRASS,
     BLOCK_DIRT,
     BLOCK_STONE,
     BLOCK_SAND,
-    None,
-    None,
-    None,
-    None,
-    None,
+    BLOCK_LEAF,
+    BLOCK_STONE_BRICKS,
+    BLOCK_STONE_COBBLE,
+    BLOCK_WOOD,
+    BLOCK_WOOD_BOARD,
 )
 
 _FACE_DATA = (
@@ -168,4 +184,14 @@ class VoxelWorld:
             return TEXTURE_STONE
         if block_type == BLOCK_SAND:
             return TEXTURE_SAND
+        if block_type == BLOCK_LEAF:
+            return TEXTURE_LEAF
+        if block_type == BLOCK_STONE_BRICKS:
+            return TEXTURE_STONE_BRICKS
+        if block_type == BLOCK_STONE_COBBLE:
+            return TEXTURE_STONE_COBBLE
+        if block_type == BLOCK_WOOD:
+            return TEXTURE_WOOD_TOP if normal[1] != 0 else TEXTURE_WOOD_SIDE
+        if block_type == BLOCK_WOOD_BOARD:
+            return TEXTURE_WOOD_BOARD
         raise ValueError(f"Неизвестный тип блока: {block_type}.")
