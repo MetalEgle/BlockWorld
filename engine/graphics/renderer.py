@@ -10,11 +10,13 @@ from OpenGL.GL import (
     GL_DEPTH_COMPONENT24,
     GL_DEPTH_BUFFER_BIT,
     GL_DEPTH_TEST,
+    GL_DYNAMIC_DRAW,
     GL_FRAMEBUFFER,
     GL_FRAMEBUFFER_COMPLETE,
     GL_FLOAT,
     GL_FRAGMENT_SHADER,
     GL_FALSE,
+    GL_LINES,
     GL_LINEAR,
     GL_LINEAR_MIPMAP_LINEAR,
     GL_LINEAR_MIPMAP_NEAREST,
@@ -59,6 +61,7 @@ from OpenGL.GL import (
     glGenTextures,
     glGenVertexArrays,
     glGetUniformLocation,
+    glLineWidth,
     glCheckFramebufferStatus,
     glCopyTexImage2D,
     glFramebufferTexture2D,
@@ -70,7 +73,9 @@ from OpenGL.GL import (
     glTexSubImage3D,
     glUniformMatrix4fv,
     glUniform1i,
+    glUniform1f,
     glUniform2f,
+    glUniform3f,
     glBindFramebuffer,
     glUseProgram,
     glViewport,
@@ -79,8 +84,10 @@ from OpenGL.GL import (
 from OpenGL.GL.shaders import compileProgram, compileShader
 from PIL import Image
 
+from engine.diagnostics import PerformanceStats
 from engine.graphics.hud import Hud
 from engine.world.voxel_world import (
+    CHUNK_SIZE,
     TEXTURE_DIRT,
     TEXTURE_GRASS_SIDE,
     TEXTURE_GRASS_TOP,
@@ -122,14 +129,27 @@ _TEXTURE_LAYERS = (
     TEXTURE_WOOD_BOARD,
 )
 
+_SUN_DIRECTION = np.asarray((0.65, 1.5, 0.65), dtype=np.float32)
+_SUN_DIRECTION /= np.linalg.norm(_SUN_DIRECTION)
+
 
 class Renderer:
     _SHADOW_RESOLUTIONS = (512, 512, 1024)
 
-    def __init__(self, vertices: np.ndarray) -> None:
+    def __init__(self, vertices: np.ndarray, surface_heights: np.ndarray) -> None:
         self._program = 0
         self._vertex_array = 0
         self._vertex_buffer = 0
+        self._outline_vertex_array = 0
+        self._outline_vertex_buffer = 0
+        self._chunk_grid_vertex_array = 0
+        self._chunk_grid_vertex_buffer = 0
+        self._chunk_grid_vertex_count = 0
+        self._debug_program = 0
+        self._debug_vertex_array = 0
+        self._debug_vertex_buffer = 0
+        self._sky_program = 0
+        self._sky_vertex_array = 0
         self._texture_array = 0
         self._blur_program = 0
         self._blur_vertex_array = 0
@@ -146,10 +166,25 @@ class Renderer:
         self._blur_texel_size_location = -1
         self._light_mvp_location = -1
         self._shadow_enabled_location = -1
+        self._sun_direction_location = -1
+        self._outline_location = -1
+        self._outline_offset_location = -1
+        self._debug_resolution_location = -1
+        self._sky_inverse_view_projection_location = -1
+        self._sky_camera_position_location = -1
+        self._sky_sun_direction_location = -1
+        self._sky_time_location = -1
+        self._sky_color_grade_location = -1
+        self._sky_effects_enabled_location = -1
+        self._color_grade_location = -1
+        self._effects_enabled_location = -1
+        self._camera_position_location = -1
         self._shadow_matrix = np.eye(4, dtype=np.float32)
         self._shadow_map_dirty = True
         self.texture_quality = 1
         self.shadow_quality = 1
+        self.color_grade = 0
+        self.effects_enabled = True
 
         assets_dir = Path(__file__).resolve().parents[2] / "assets"
         shader_dir = assets_dir / "shaders"
@@ -172,6 +207,24 @@ class Renderer:
             self._shadow_enabled_location = glGetUniformLocation(
                 self._program, "u_shadows_enabled"
             )
+            self._sun_direction_location = glGetUniformLocation(
+                self._program, "u_sun_direction"
+            )
+            self._outline_location = glGetUniformLocation(
+                self._program, "u_outline"
+            )
+            self._outline_offset_location = glGetUniformLocation(
+                self._program, "u_outline_offset"
+            )
+            self._color_grade_location = glGetUniformLocation(
+                self._program, "u_color_grade"
+            )
+            self._effects_enabled_location = glGetUniformLocation(
+                self._program, "u_effects_enabled"
+            )
+            self._camera_position_location = glGetUniformLocation(
+                self._program, "u_camera_position"
+            )
             self._texture_array = self._load_textures(assets_dir / "textures")
             glUseProgram(self._program)
             glUniform1i(self._texture_location, 0)
@@ -192,6 +245,36 @@ class Renderer:
             )
             self._shadow_matrix = self._make_shadow_matrix(vertices)
             self._create_shadow_map(self._SHADOW_RESOLUTIONS[self.shadow_quality])
+
+            sky_vertex_source = (shader_dir / "sky.vert").read_text(
+                encoding="utf-8"
+            )
+            sky_fragment_source = (shader_dir / "sky.frag").read_text(
+                encoding="utf-8"
+            )
+            self._sky_program = compileProgram(
+                compileShader(sky_vertex_source, GL_VERTEX_SHADER),
+                compileShader(sky_fragment_source, GL_FRAGMENT_SHADER),
+            )
+            self._sky_inverse_view_projection_location = glGetUniformLocation(
+                self._sky_program, "u_inverse_view_projection"
+            )
+            self._sky_camera_position_location = glGetUniformLocation(
+                self._sky_program, "u_camera_position"
+            )
+            self._sky_sun_direction_location = glGetUniformLocation(
+                self._sky_program, "u_sun_direction"
+            )
+            self._sky_time_location = glGetUniformLocation(
+                self._sky_program, "u_time"
+            )
+            self._sky_color_grade_location = glGetUniformLocation(
+                self._sky_program, "u_color_grade"
+            )
+            self._sky_effects_enabled_location = glGetUniformLocation(
+                self._sky_program, "u_effects_enabled"
+            )
+            self._sky_vertex_array = glGenVertexArrays(1)
 
             blur_vertex_source = (shader_dir / "blur.vert").read_text(
                 encoding="utf-8"
@@ -261,7 +344,7 @@ class Renderer:
             glBindBuffer(GL_ARRAY_BUFFER, self._vertex_buffer)
             glBufferData(GL_ARRAY_BUFFER, vertices.nbytes, vertices, GL_STATIC_DRAW)
 
-            stride = 7 * vertices.itemsize
+            stride = 10 * vertices.itemsize
             glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride, None)
             glEnableVertexAttribArray(0)
             glVertexAttribPointer(
@@ -291,15 +374,117 @@ class Renderer:
                 c_void_p(6 * vertices.itemsize),
             )
             glEnableVertexAttribArray(3)
+            glVertexAttribPointer(
+                4,
+                3,
+                GL_FLOAT,
+                GL_FALSE,
+                stride,
+                c_void_p(7 * vertices.itemsize),
+            )
+            glEnableVertexAttribArray(4)
             glBindBuffer(GL_ARRAY_BUFFER, 0)
             glBindVertexArray(0)
             glEnable(GL_DEPTH_TEST)
+
+            chunk_grid_vertices = self._build_chunk_grid_vertices(surface_heights)
+            self._chunk_grid_vertex_count = len(chunk_grid_vertices)
+            self._chunk_grid_vertex_array = glGenVertexArrays(1)
+            self._chunk_grid_vertex_buffer = glGenBuffers(1)
+            glBindVertexArray(self._chunk_grid_vertex_array)
+            glBindBuffer(GL_ARRAY_BUFFER, self._chunk_grid_vertex_buffer)
+            glBufferData(
+                GL_ARRAY_BUFFER,
+                chunk_grid_vertices.nbytes,
+                chunk_grid_vertices,
+                GL_STATIC_DRAW,
+            )
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * vertices.itemsize, None)
+            glEnableVertexAttribArray(0)
+            glBindBuffer(GL_ARRAY_BUFFER, 0)
+            glBindVertexArray(0)
+
+            debug_vertex_source = (shader_dir / "debug_overlay.vert").read_text(
+                encoding="utf-8"
+            )
+            debug_fragment_source = (shader_dir / "debug_overlay.frag").read_text(
+                encoding="utf-8"
+            )
+            self._debug_program = compileProgram(
+                compileShader(debug_vertex_source, GL_VERTEX_SHADER),
+                compileShader(debug_fragment_source, GL_FRAGMENT_SHADER),
+            )
+            self._debug_resolution_location = glGetUniformLocation(
+                self._debug_program, "u_resolution"
+            )
+            self._debug_vertex_array = glGenVertexArrays(1)
+            self._debug_vertex_buffer = glGenBuffers(1)
+            glBindVertexArray(self._debug_vertex_array)
+            glBindBuffer(GL_ARRAY_BUFFER, self._debug_vertex_buffer)
+            glVertexAttribPointer(
+                0, 2, GL_FLOAT, GL_FALSE, 5 * vertices.itemsize, None
+            )
+            glEnableVertexAttribArray(0)
+            glVertexAttribPointer(
+                1,
+                3,
+                GL_FLOAT,
+                GL_FALSE,
+                5 * vertices.itemsize,
+                c_void_p(2 * vertices.itemsize),
+            )
+            glEnableVertexAttribArray(1)
+            glBindBuffer(GL_ARRAY_BUFFER, 0)
+            glBindVertexArray(0)
+
+            outline_vertices = np.array(
+                (
+                    0, 0, 0, 1, 0, 0,
+                    1, 0, 0, 1, 1, 0,
+                    1, 1, 0, 0, 1, 0,
+                    0, 1, 0, 0, 0, 0,
+                    0, 0, 1, 1, 0, 1,
+                    1, 0, 1, 1, 1, 1,
+                    1, 1, 1, 0, 1, 1,
+                    0, 1, 1, 0, 0, 1,
+                    0, 0, 0, 0, 0, 1,
+                    1, 0, 0, 1, 0, 1,
+                    1, 1, 0, 1, 1, 1,
+                    0, 1, 0, 0, 1, 1,
+                ),
+                dtype=np.float32,
+            )
+            outline_vertices = outline_vertices.reshape(-1, 3)
+            outline_vertices = np.where(
+                outline_vertices == 0.0, -0.002, 1.002
+            ).astype(np.float32)
+            self._outline_vertex_array = glGenVertexArrays(1)
+            self._outline_vertex_buffer = glGenBuffers(1)
+            glBindVertexArray(self._outline_vertex_array)
+            glBindBuffer(GL_ARRAY_BUFFER, self._outline_vertex_buffer)
+            glBufferData(
+                GL_ARRAY_BUFFER,
+                outline_vertices.nbytes,
+                outline_vertices,
+                GL_STATIC_DRAW,
+            )
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * vertices.itemsize, None)
+            glEnableVertexAttribArray(0)
+            glBindBuffer(GL_ARRAY_BUFFER, 0)
+            glBindVertexArray(0)
         except Exception:
             self.close()
             raise
 
     def render(
-        self, view: np.ndarray, projection: np.ndarray, width: int, height: int
+        self,
+        view: np.ndarray,
+        projection: np.ndarray,
+        width: int,
+        height: int,
+        outline_position: tuple[int, int, int] | None = None,
+        show_chunk_grid: bool = False,
+        time_seconds: float = 0.0,
     ) -> None:
         if width <= 0 or height <= 0:
             return
@@ -308,6 +493,13 @@ class Renderer:
             self._render_shadow_map(width, height)
 
         mvp = projection @ view
+        inverse_view_projection = np.linalg.inv(mvp)
+        camera_position = np.linalg.inv(view)[:3, 3]
+        self._draw_sky(
+            inverse_view_projection,
+            camera_position,
+            time_seconds,
+        )
 
         glUseProgram(self._program)
         glUniformMatrix4fv(self._mvp_location, 1, GL_FALSE, mvp.flatten(order="F"))
@@ -315,6 +507,22 @@ class Renderer:
             self._light_mvp_location, 1, GL_FALSE, self._shadow_matrix.flatten(order="F")
         )
         glUniform1i(self._shadow_enabled_location, int(self.shadow_quality > 0))
+        glUniform1i(self._outline_location, 0)
+        glUniform1i(self._color_grade_location, self.color_grade)
+        glUniform1i(self._effects_enabled_location, int(self.effects_enabled))
+        glUniform3f(
+            self._camera_position_location,
+            float(camera_position[0]),
+            float(camera_position[1]),
+            float(camera_position[2]),
+        )
+        glUniform3f(
+            self._sun_direction_location,
+            float(_SUN_DIRECTION[0]),
+            float(_SUN_DIRECTION[1]),
+            float(_SUN_DIRECTION[2]),
+        )
+        glUniform3f(self._outline_offset_location, 0.0, 0.0, 0.0)
         glActiveTexture(GL_TEXTURE0)
         glBindTexture(GL_TEXTURE_2D_ARRAY, self._texture_array)
         glActiveTexture(GL_TEXTURE0 + 1)
@@ -322,10 +530,113 @@ class Renderer:
         glBindVertexArray(self._vertex_array)
         glDrawArrays(GL_TRIANGLES, 0, self._vertex_count)
         glBindVertexArray(0)
+        if show_chunk_grid and self._chunk_grid_vertex_count:
+            glUniform1i(self._outline_location, 1)
+            glUniform3f(self._outline_offset_location, 0.0, 0.0, 0.0)
+            glBindVertexArray(self._chunk_grid_vertex_array)
+            glDrawArrays(GL_LINES, 0, self._chunk_grid_vertex_count)
+            glBindVertexArray(0)
+        if outline_position is not None:
+            glUniform1i(self._outline_location, 1)
+            glUniform3f(
+                self._outline_offset_location,
+                float(outline_position[0]),
+                float(outline_position[1]),
+                float(outline_position[2]),
+            )
+            glLineWidth(2.0)
+            glBindVertexArray(self._outline_vertex_array)
+            glDrawArrays(GL_LINES, 0, 24)
+            glBindVertexArray(0)
+            glLineWidth(1.0)
         glActiveTexture(GL_TEXTURE0 + 1)
         glBindTexture(GL_TEXTURE_2D, 0)
         glActiveTexture(GL_TEXTURE0)
         glBindTexture(GL_TEXTURE_2D_ARRAY, 0)
+
+    def _draw_sky(
+        self,
+        inverse_view_projection: np.ndarray,
+        camera_position: np.ndarray,
+        time_seconds: float,
+    ) -> None:
+        glDisable(GL_DEPTH_TEST)
+        glUseProgram(self._sky_program)
+        glUniformMatrix4fv(
+            self._sky_inverse_view_projection_location,
+            1,
+            GL_FALSE,
+            inverse_view_projection.flatten(order="F"),
+        )
+        glUniform3f(
+            self._sky_camera_position_location,
+            float(camera_position[0]),
+            float(camera_position[1]),
+            float(camera_position[2]),
+        )
+        glUniform3f(
+            self._sky_sun_direction_location,
+            float(_SUN_DIRECTION[0]),
+            float(_SUN_DIRECTION[1]),
+            float(_SUN_DIRECTION[2]),
+        )
+        glUniform1f(self._sky_time_location, time_seconds)
+        glUniform1i(self._sky_color_grade_location, self.color_grade)
+        glUniform1i(
+            self._sky_effects_enabled_location, int(self.effects_enabled)
+        )
+        glBindVertexArray(self._sky_vertex_array)
+        glDrawArrays(GL_TRIANGLES, 0, 3)
+        glBindVertexArray(0)
+        glEnable(GL_DEPTH_TEST)
+
+    @staticmethod
+    def _build_chunk_grid_vertices(surface_heights: np.ndarray) -> np.ndarray:
+        world_size = surface_heights.shape[0]
+        coordinates = list(range(0, world_size, CHUNK_SIZE))
+        coordinates.append(world_size)
+        vertices: list[tuple[float, float, float]] = []
+
+        for coordinate in coordinates:
+            left_x = max(coordinate - 1, 0)
+            right_x = min(coordinate, world_size - 1)
+            for z in range(world_size):
+                next_z = min(z + 1, world_size - 1)
+                start_y = max(
+                    int(surface_heights[left_x, z]),
+                    int(surface_heights[right_x, z]),
+                ) + 1.02
+                end_y = max(
+                    int(surface_heights[left_x, next_z]),
+                    int(surface_heights[right_x, next_z]),
+                ) + 1.02
+                vertices.extend(
+                    (
+                        (float(coordinate), start_y, float(z)),
+                        (float(coordinate), end_y, float(z + 1)),
+                    )
+                )
+
+            near_z = max(coordinate - 1, 0)
+            far_z = min(coordinate, world_size - 1)
+            for x in range(world_size):
+                next_x = min(x + 1, world_size - 1)
+                start_y = max(
+                    int(surface_heights[x, near_z]),
+                    int(surface_heights[x, far_z]),
+                ) + 1.02
+                end_y = max(
+                    int(surface_heights[next_x, near_z]),
+                    int(surface_heights[next_x, far_z]),
+                ) + 1.02
+                vertices.extend(
+                    (
+                        (float(x), start_y, float(coordinate)),
+                        (float(x + 1), end_y, float(coordinate)),
+                    )
+                )
+
+        return np.asarray(vertices, dtype=np.float32).reshape(-1, 3)
 
     @staticmethod
     def _make_shadow_matrix(vertices: np.ndarray) -> np.ndarray:
@@ -338,7 +649,7 @@ class Renderer:
             center = np.zeros(3, dtype=np.float32)
             radius = 16.0
 
-        eye = center + np.array((radius * 0.65, radius * 1.5, radius * 0.65))
+        eye = center + radius * _SUN_DIRECTION
         forward = center - eye
         forward /= np.linalg.norm(forward)
         right = np.cross(forward, np.array((0.0, 1.0, 0.0)))
@@ -469,6 +780,14 @@ class Renderer:
         self.shadow_quality = quality
         self._shadow_map_dirty = True
 
+    def set_color_grade(self, grade: int) -> None:
+        if grade not in (0, 1, 2, 3):
+            raise ValueError(f"Неизвестный вариант цветокоррекции: {grade}.")
+        self.color_grade = grade
+
+    def set_effects_enabled(self, enabled: bool) -> None:
+        self.effects_enabled = enabled
+
     @staticmethod
     def _load_textures(texture_dir: Path) -> int:
         images: list[np.ndarray] = []
@@ -556,6 +875,27 @@ class Renderer:
     def draw_hud(width: int, height: int, selected_slot: int) -> None:
         Hud.draw(width, height, selected_slot)
 
+    def draw_debug_overlay(
+        self,
+        width: int, height: int, stats: PerformanceStats, block_count: int
+    ) -> None:
+        vertices = Hud.build_debug_overlay_vertices(
+            width, height, stats, block_count
+        )
+        if not len(vertices):
+            return
+
+        glDisable(GL_DEPTH_TEST)
+        glUseProgram(self._debug_program)
+        glUniform2f(self._debug_resolution_location, float(width), float(height))
+        glBindVertexArray(self._debug_vertex_array)
+        glBindBuffer(GL_ARRAY_BUFFER, self._debug_vertex_buffer)
+        glBufferData(GL_ARRAY_BUFFER, vertices.nbytes, vertices, GL_DYNAMIC_DRAW)
+        glDrawArrays(GL_TRIANGLES, 0, len(vertices))
+        glBindBuffer(GL_ARRAY_BUFFER, 0)
+        glBindVertexArray(0)
+        glEnable(GL_DEPTH_TEST)
+
     def draw_menu(
         self,
         width: int,
@@ -564,6 +904,8 @@ class Renderer:
         hovered_button: int | None = None,
         texture_quality: int = 1,
         shadow_quality: int = 1,
+        color_grade: int = 0,
+        effects_enabled: bool = True,
     ) -> None:
         self._draw_blurred_background(width, height)
         Hud.draw_menu(
@@ -573,6 +915,8 @@ class Renderer:
             hovered_button,
             texture_quality,
             shadow_quality,
+            color_grade,
+            effects_enabled,
         )
 
     def _draw_blurred_background(self, width: int, height: int) -> None:
@@ -596,6 +940,33 @@ class Renderer:
         glEnable(GL_DEPTH_TEST)
 
     def close(self) -> None:
+        if self._chunk_grid_vertex_buffer:
+            glDeleteBuffers(1, [self._chunk_grid_vertex_buffer])
+            self._chunk_grid_vertex_buffer = 0
+        if self._chunk_grid_vertex_array:
+            glDeleteVertexArrays(1, [self._chunk_grid_vertex_array])
+            self._chunk_grid_vertex_array = 0
+        if self._debug_vertex_buffer:
+            glDeleteBuffers(1, [self._debug_vertex_buffer])
+            self._debug_vertex_buffer = 0
+        if self._debug_vertex_array:
+            glDeleteVertexArrays(1, [self._debug_vertex_array])
+            self._debug_vertex_array = 0
+        if self._debug_program:
+            glDeleteProgram(self._debug_program)
+            self._debug_program = 0
+        if self._sky_vertex_array:
+            glDeleteVertexArrays(1, [self._sky_vertex_array])
+            self._sky_vertex_array = 0
+        if self._sky_program:
+            glDeleteProgram(self._sky_program)
+            self._sky_program = 0
+        if self._outline_vertex_buffer:
+            glDeleteBuffers(1, [self._outline_vertex_buffer])
+            self._outline_vertex_buffer = 0
+        if self._outline_vertex_array:
+            glDeleteVertexArrays(1, [self._outline_vertex_array])
+            self._outline_vertex_array = 0
         if self._vertex_buffer:
             glDeleteBuffers(1, [self._vertex_buffer])
             self._vertex_buffer = 0

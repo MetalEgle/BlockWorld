@@ -9,9 +9,10 @@ from OpenGL.GL import (
     glViewport,
 )
 
+from engine.diagnostics import PerformanceMonitor
+from engine.game.player import Player
 from engine.graphics.hud import Hud
 from engine.graphics.renderer import Renderer
-from engine.game.player import Player
 from engine.world.voxel_world import BLOCK_DIRT, BLOCK_GRASS, HOTBAR_BLOCKS, VoxelWorld
 
 
@@ -29,6 +30,11 @@ class Application:
         self.settings_open = False
         self.texture_quality = 1
         self.shadow_quality = 1
+        self.color_grade = 0
+        self.effects_enabled = True
+        self.performance_monitor = PerformanceMonitor()
+        self.show_performance_overlay = False
+        self.show_chunk_grid = False
 
     def initialize(self) -> None:
         if not glfw.init():
@@ -65,12 +71,16 @@ class Application:
         self._on_framebuffer_resize(self.window, width, height)
         glClearColor(0.04, 0.07, 0.14, 1.0)
         self.world = VoxelWorld()
+        spawn_x = self.world.size // 2
+        spawn_z = self.world.size // 2
         self.player = Player(
-            self.world.size / 2,
-            2.0,
-            self.world.size / 2,
+            spawn_x + 0.5,
+            self.world.surface_height_at(spawn_x, spawn_z) + 1.0,
+            spawn_z + 0.5,
         )
-        self.renderer = Renderer(self.world.build_mesh())
+        self.renderer = Renderer(
+            self.world.build_mesh(), self.world.surface_heights
+        )
 
     @staticmethod
     def _on_framebuffer_resize(
@@ -100,16 +110,30 @@ class Application:
                 glfw.poll_events()
 
                 current_time = glfw.get_time()
+                performance = self.performance_monitor.update(
+                    current_time - previous_time
+                )
                 if not self.menu_open:
                     player.update(window, world, current_time - previous_time)
                 previous_time = current_time
+                glClearColor(*self._clear_color_for_grade(self.color_grade), 1.0)
                 glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
                 width, height = glfw.get_framebuffer_size(window)
+                targeted_block = None
+                if not self.menu_open:
+                    hit = world.raycast(
+                        player.eye_position(), player.forward_direction(), 6.0
+                    )
+                    if hit is not None:
+                        targeted_block = hit[0]
                 renderer.render(
                     player.view_matrix(),
                     self._projection_matrix(width, height),
                     width,
                     height,
+                    targeted_block,
+                    self.show_chunk_grid and not self.menu_open,
+                    current_time,
                 )
                 if self.menu_open:
                     hovered_button = (
@@ -124,9 +148,18 @@ class Application:
                         hovered_button,
                         self.texture_quality,
                         self.shadow_quality,
+                        self.color_grade,
+                        self.effects_enabled,
                     )
                 else:
                     renderer.draw_hud(width, height, self.selected_hotbar_slot)
+                if self.show_performance_overlay:
+                    renderer.draw_debug_overlay(
+                        width,
+                        height,
+                        performance,
+                        int(np.count_nonzero(world.blocks)),
+                    )
                 glfw.swap_buffers(window)
 
         finally:
@@ -197,7 +230,7 @@ class Application:
                         cursor_x * width / window_width,
                         height - cursor_y * height / window_height,
                     )
-                    if setting == (2, 0):
+                    if setting == (4, 0):
                         self.settings_open = False
                     elif setting is not None:
                         row, quality = setting
@@ -209,6 +242,14 @@ class Application:
                             self.shadow_quality = quality
                             if self.renderer is not None:
                                 self.renderer.set_shadow_quality(quality)
+                        elif row == 2:
+                            self.color_grade = quality
+                            if self.renderer is not None:
+                                self.renderer.set_color_grade(quality)
+                        elif row == 3:
+                            self.effects_enabled = bool(quality)
+                            if self.renderer is not None:
+                                self.renderer.set_effects_enabled(self.effects_enabled)
                 elif menu_button == 0:
                     self._close_menu()
                 elif menu_button == 1:
@@ -240,7 +281,7 @@ class Application:
                 if block_type is not None
                 else False
             )
-            if changed and block_type == BLOCK_GRASS:
+            if changed:
                 below_block = (
                     adjacent_block[0],
                     adjacent_block[1] - 1,
@@ -270,6 +311,12 @@ class Application:
 
         if key == glfw.KEY_ESCAPE:
             self._handle_escape()
+            return
+        if key == glfw.KEY_F3:
+            self.show_performance_overlay = not self.show_performance_overlay
+            return
+        if key == glfw.KEY_F4:
+            self.show_chunk_grid = not self.show_chunk_grid
             return
         if self.menu_open:
             return
@@ -309,6 +356,40 @@ class Application:
         self._mouse_buttons_down.clear()
         if self.window is not None:
             glfw.set_input_mode(self.window, glfw.CURSOR, glfw.CURSOR_DISABLED)
+
+    @staticmethod
+    def _clear_color_for_grade(grade: int) -> tuple[float, float, float]:
+        clear_color = (0.04, 0.07, 0.14)
+        if grade == 0:
+            return clear_color
+        if grade == 1:
+            return (
+                min(1.0, clear_color[0] * 1.10),
+                min(1.0, clear_color[1] * 1.03),
+                min(1.0, clear_color[2] * 0.88),
+            )
+        if grade == 2:
+            return (
+                min(1.0, clear_color[0] * 0.88),
+                min(1.0, clear_color[1] * 1.01),
+                min(1.0, clear_color[2] * 1.14),
+            )
+        if grade == 3:
+            luminance = (
+                clear_color[0] * 0.2126
+                + clear_color[1] * 0.7152
+                + clear_color[2] * 0.0722
+            )
+            color = tuple(
+                luminance + (component - luminance) * 0.82
+                for component in clear_color
+            )
+            return (
+                min(1.0, max(0.0, (color[0] - 0.5) * 1.12 + 0.5) * 1.05),
+                min(1.0, max(0.0, (color[1] - 0.5) * 1.12 + 0.5)),
+                min(1.0, max(0.0, (color[2] - 0.5) * 1.12 + 0.5) * 0.91),
+            )
+        raise ValueError(f"Неизвестный вариант цветокоррекции: {grade}.")
 
     @staticmethod
     def _menu_hovered_button(

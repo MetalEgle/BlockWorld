@@ -1,3 +1,4 @@
+import numpy as np
 from OpenGL.GL import (
     GL_COLOR_BUFFER_BIT,
     GL_SCISSOR_TEST,
@@ -8,6 +9,7 @@ from OpenGL.GL import (
     glScissor,
 )
 
+from engine.diagnostics import PerformanceStats
 from engine.world.voxel_world import (
     BLOCK_COLORS,
     BLOCK_DIRT,
@@ -41,12 +43,53 @@ _HUNGER = (
 class Hud:
     """Draw a compact, pixel-style first-person status display."""
 
+    _DEBUG_GLYPHS = {
+        "0": ("01110", "10001", "10011", "10101", "11001", "10001", "01110"),
+        "1": ("00100", "01100", "00100", "00100", "00100", "00100", "01110"),
+        "2": ("01110", "10001", "00001", "00010", "00100", "01000", "11111"),
+        "3": ("11110", "00001", "00001", "01110", "00001", "00001", "11110"),
+        "4": ("00010", "00110", "01010", "10010", "11111", "00010", "00010"),
+        "5": ("11111", "10000", "10000", "11110", "00001", "00001", "11110"),
+        "6": ("01110", "10000", "10000", "11110", "10001", "10001", "01110"),
+        "7": ("11111", "00001", "00010", "00100", "01000", "01000", "01000"),
+        "8": ("01110", "10001", "10001", "01110", "10001", "10001", "01110"),
+        "9": ("01110", "10001", "10001", "01111", "00001", "00001", "01110"),
+        "A": ("01110", "10001", "10001", "11111", "10001", "10001", "10001"),
+        "B": ("11110", "10001", "10001", "11110", "10001", "10001", "11110"),
+        "C": ("01111", "10000", "10000", "10000", "10000", "10000", "01111"),
+        "D": ("11110", "10001", "10001", "10001", "10001", "10001", "11110"),
+        "E": ("11111", "10000", "10000", "11110", "10000", "10000", "11111"),
+        "F": ("11111", "10000", "10000", "11110", "10000", "10000", "10000"),
+        "G": ("01111", "10000", "10000", "10111", "10001", "10001", "01111"),
+        "H": ("10001", "10001", "10001", "11111", "10001", "10001", "10001"),
+        "I": ("01110", "00100", "00100", "00100", "00100", "00100", "01110"),
+        "K": ("10001", "10010", "10100", "11000", "10100", "10010", "10001"),
+        "L": ("10000", "10000", "10000", "10000", "10000", "10000", "11111"),
+        "M": ("10001", "11011", "10101", "10101", "10001", "10001", "10001"),
+        "N": ("10001", "11001", "11001", "10101", "10011", "10011", "10001"),
+        "O": ("01110", "10001", "10001", "10001", "10001", "10001", "01110"),
+        "P": ("11110", "10001", "10001", "11110", "10000", "10000", "10000"),
+        "R": ("11110", "10001", "10001", "11110", "10100", "10010", "10001"),
+        "S": ("01111", "10000", "10000", "01110", "00001", "00001", "11110"),
+        "T": ("11111", "00100", "00100", "00100", "00100", "00100", "00100"),
+        "U": ("10001", "10001", "10001", "10001", "10001", "10001", "01110"),
+        "V": ("10001", "10001", "10001", "10001", "10001", "01010", "00100"),
+        "X": ("10001", "10001", "01010", "00100", "01010", "10001", "10001"),
+        "Y": ("10001", "10001", "01010", "00100", "00100", "00100", "00100"),
+        " ": ("00000",) * 7,
+        "%": ("11001", "11010", "00100", "01000", "10110", "00110", "00000"),
+        ".": ("00000", "00000", "00000", "00000", "00000", "00110", "00110"),
+        "/": ("00001", "00010", "00010", "00100", "01000", "01000", "10000"),
+    }
+
     _MENU_GLYPHS = {
         "А": ("01110", "10001", "10001", "11111", "10001", "10001", "10001"),
         "В": ("11110", "10001", "10001", "11110", "10001", "10001", "11110"),
         "Г": ("11111", "10000", "10000", "10000", "10000", "10000", "10000"),
         "Д": ("00110", "01010", "01010", "01010", "10001", "11111", "10001"),
         "Е": ("11111", "10000", "10000", "11110", "10000", "10000", "11111"),
+        "Э": ("11111", "00001", "00111", "00001", "00001", "10001", "01110"),
+        "Ф": ("00100", "01110", "10101", "10101", "01110", "00100", "00100"),
         "Ж": ("10101", "10101", "01110", "00100", "01110", "10101", "10101"),
         "З": ("01110", "10001", "00001", "00110", "00001", "10001", "01110"),
         "И": ("10001", "10011", "10101", "11001", "10001", "10001", "10001"),
@@ -61,6 +104,7 @@ class Hud:
         "С": ("01111", "10000", "10000", "10000", "10000", "10000", "01111"),
         "Т": ("11111", "00100", "00100", "00100", "00100", "00100", "00100"),
         "У": ("10001", "10001", "10001", "01111", "00001", "10001", "01110"),
+        "Ц": ("10010", "10010", "10010", "10010", "10010", "11111", "00001"),
         "Х": ("10001", "10001", "01010", "00100", "01010", "10001", "10001"),
         "Ы": ("10001", "10001", "11101", "10011", "10011", "10001", "11101"),
         "Ь": ("10000", "10000", "10000", "11110", "10001", "10001", "11110"),
@@ -95,13 +139,15 @@ class Hud:
         hovered_button: int | None = None,
         texture_quality: int = 1,
         shadow_quality: int = 1,
+        color_grade: int = 0,
+        effects_enabled: bool = True,
     ) -> None:
         if width <= 0 or height <= 0:
             return
 
         scale = max(1, height // 540)
         panel_width = min(360 * scale, width - 32 * scale)
-        panel_height = min(330 * scale, height - 32 * scale)
+        panel_height = min((420 if settings_open else 330) * scale, height - 32 * scale)
         panel_x = (width - panel_width) // 2
         panel_y = (height - panel_height) // 2
         Hud._rectangle(panel_x, panel_y, panel_width, panel_height, (0.09, 0.12, 0.17))
@@ -123,7 +169,14 @@ class Hud:
         )
 
         if settings_open:
-            Hud._draw_settings(width, height, texture_quality, shadow_quality)
+            Hud._draw_settings(
+                width,
+                height,
+                texture_quality,
+                shadow_quality,
+                color_grade,
+                effects_enabled,
+            )
             return
 
         labels = ("ПРОДОЛЖИТЬ", "НАСТРОЙКИ", "ВЫХОД ИЗ ИГРЫ")
@@ -152,6 +205,113 @@ class Hud:
             )
 
     @staticmethod
+    def build_debug_overlay_vertices(
+        width: int,
+        height: int,
+        stats: PerformanceStats,
+        block_count: int,
+    ) -> np.ndarray:
+        if width <= 0 or height <= 0:
+            return np.empty((0, 5), dtype=np.float32)
+
+        scale = max(1, height // 720)
+        lines = (
+            f"FPS {stats.fps:.1f}",
+            f"FRAME {stats.frame_time_ms:.1f} MS",
+            f"FRAMES {stats.frame_count}",
+            f"CPU {stats.process_cpu_percent:.0f}% GAME",
+            f"CPU {stats.system_cpu_percent:.0f}% SYS",
+            f"RAM {stats.process_memory_mb:.0f} MB GAME",
+            (
+                f"RAM {stats.system_memory_used_gb:.1f}/"
+                f"{stats.system_memory_total_gb:.1f} GB SYS"
+            ),
+            f"BLOCKS {block_count}",
+            f"RES {width}X{height}",
+        )
+        padding = 6 * scale
+        line_height = 9 * scale
+        text_width = max(len(line) * 6 * scale - scale for line in lines)
+        panel_width = text_width + 2 * padding
+        panel_height = len(lines) * line_height + 2 * padding
+        panel_x = 8 * scale
+        panel_y = height - panel_height - 8 * scale
+
+        vertices: list[float] = []
+        Hud._append_debug_rectangle(
+            vertices,
+            panel_x,
+            panel_y,
+            panel_width,
+            panel_height,
+            (0.04, 0.05, 0.07),
+        )
+        for index, line in enumerate(lines):
+            Hud._append_debug_text(
+                vertices,
+                line,
+                panel_x + padding,
+                panel_y + panel_height - padding - (index + 1) * line_height + scale,
+                scale,
+                (0.92, 0.95, 0.98),
+            )
+        return np.asarray(vertices, dtype=np.float32).reshape(-1, 5)
+
+    @staticmethod
+    def _append_debug_text(
+        vertices: list[float],
+        text: str,
+        x: int,
+        y: int,
+        scale: int,
+        color: tuple[float, float, float],
+    ) -> None:
+        for character in text:
+            glyph = Hud._DEBUG_GLYPHS[character]
+            for row_index, row in enumerate(glyph):
+                column = 0
+                while column < len(row):
+                    if row[column] != "1":
+                        column += 1
+                        continue
+                    start = column
+                    while column < len(row) and row[column] == "1":
+                        column += 1
+                    Hud._append_debug_rectangle(
+                        vertices,
+                        x + start * scale,
+                        y + (len(glyph) - row_index - 1) * scale,
+                        (column - start) * scale,
+                        scale,
+                        color,
+                    )
+            x += 6 * scale
+
+    @staticmethod
+    def _append_debug_rectangle(
+        vertices: list[float],
+        x: int,
+        y: int,
+        width: int,
+        height: int,
+        color: tuple[float, float, float],
+    ) -> None:
+        if width <= 0 or height <= 0:
+            return
+
+        x2 = x + width
+        y2 = y + height
+        for point_x, point_y in (
+            (x, y),
+            (x2, y),
+            (x2, y2),
+            (x, y),
+            (x2, y2),
+            (x, y2),
+        ):
+            vertices.extend((point_x, point_y, *color))
+
+    @staticmethod
     def menu_button_at(
         width: int, height: int, x: float, y: float
     ) -> int | None:
@@ -169,7 +329,7 @@ class Hud:
     def settings_option_at(
         width: int, height: int, x: float, y: float
     ) -> tuple[int, int] | None:
-        for row in range(2):
+        for row in range(4):
             for option, bounds in enumerate(
                 Hud._settings_choice_bounds(width, height, row)
             ):
@@ -187,24 +347,46 @@ class Hud:
             back_x <= x < back_x + back_width
             and back_y <= y < back_y + back_height
         ):
-            return 2, 0
+            return 4, 0
         return None
 
     @staticmethod
     def _draw_settings(
-        width: int, height: int, texture_quality: int, shadow_quality: int
+        width: int,
+        height: int,
+        texture_quality: int,
+        shadow_quality: int,
+        color_grade: int,
+        effects_enabled: bool,
     ) -> None:
         scale = max(1, height // 540)
-        row_labels = ("ТЕКСТУРЫ", "ТЕНИ")
+        row_labels = ("ТЕКСТУРЫ", "ТЕНИ", "ЦВЕТОКОР", "ЭФФЕКТЫ")
         for row, (label, selected) in enumerate(
-            zip(row_labels, (texture_quality, shadow_quality))
+            zip(
+                row_labels,
+                (
+                    texture_quality,
+                    shadow_quality,
+                    color_grade,
+                    int(effects_enabled),
+                ),
+            )
         ):
-            if selected not in range(3):
+            option_count = 4 if row == 2 else 2 if row == 3 else 3
+            if selected not in range(option_count):
                 raise ValueError(f"Неизвестный уровень качества настройки: {selected}.")
             option_labels = (
                 ("НИЗКОЕ", "СРЕДНЕЕ", "ВЫСОКОЕ")
                 if row == 0
-                else ("ВЫКЛ", "НИЗКОЕ", "ВЫСОКОЕ")
+                else (
+                    ("ВЫКЛ", "НИЗКОЕ", "ВЫСОКОЕ")
+                    if row == 1
+                    else (
+                        ("ВЫКЛ", "ТЕПЛО", "ХОЛОД", "КИНО")
+                        if row == 2
+                        else ("ВЫКЛ", "ВКЛ")
+                    )
+                )
             )
             choice_bounds = Hud._settings_choice_bounds(width, height, row)
             label_y = choice_bounds[0][1] + choice_bounds[0][3] + 8 * scale
@@ -249,32 +431,37 @@ class Hud:
         width: int, height: int, row: int
     ) -> tuple[tuple[int, int, int, int], ...]:
         scale = max(1, height // 540)
-        panel_height = min(330 * scale, height - 32 * scale)
+        panel_height = min(420 * scale, height - 32 * scale)
         panel_y = (height - panel_height) // 2
         button_width = min(280 * scale, width - 48 * scale)
-        choice_width = button_width // 3
+        option_count = 4 if row == 2 else 2 if row == 3 else 3
+        choice_width = button_width // option_count
         button_height = 30 * scale
-        button_y = panel_y + panel_height - (144 + row * 82) * scale
+        button_y = panel_y + panel_height - (144 + row * 75) * scale
         return tuple(
             (
                 (width - button_width) // 2 + option * choice_width,
                 button_y,
-                choice_width if option < 2 else button_width - 2 * choice_width,
+                (
+                    choice_width
+                    if option < option_count - 1
+                    else button_width - (option_count - 1) * choice_width
+                ),
                 button_height,
             )
-            for option in range(3)
+            for option in range(option_count)
         )
 
     @staticmethod
     def _settings_back_bounds(width: int, height: int) -> tuple[int, int, int, int]:
         scale = max(1, height // 540)
-        panel_height = min(330 * scale, height - 32 * scale)
+        panel_height = min(420 * scale, height - 32 * scale)
         panel_y = (height - panel_height) // 2
         button_width = min(280 * scale, width - 48 * scale)
         button_height = 30 * scale
         return (
             (width - button_width) // 2,
-            panel_y + 12 * scale,
+            panel_y + 2 * scale,
             button_width,
             button_height,
         )
