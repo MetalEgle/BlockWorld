@@ -12,6 +12,8 @@ from engine.world.voxel_world import (
     _FACE_DATA,
     BLOCK_DIRT,
     BLOCK_GRASS,
+    BLOCK_GLOWSTONE,
+    BLOCK_LANTERN,
     BLOCK_LEAF,
     BLOCK_SAND,
     BLOCK_STONE_BRICKS,
@@ -19,7 +21,9 @@ from engine.world.voxel_world import (
     BLOCK_STONE,
     BLOCK_WOOD,
     BLOCK_WOOD_BOARD,
+    BLOCK_TYPES,
     DIRT_LAYER_DEPTH,
+    GLOWSTONE_LIGHT_LEVEL,
     HOTBAR_BLOCKS,
     TEXTURE_DIRT,
     TEXTURE_GRASS_SIDE,
@@ -32,21 +36,22 @@ from engine.world.voxel_world import (
     TEXTURE_WOOD_SIDE,
     TEXTURE_WOOD_TOP,
     TEXTURE_WOOD_BOARD,
+    TEXTURE_LANTERN,
     VoxelWorld,
 )
 
 
 class VoxelWorldTests(unittest.TestCase):
-    def test_default_world_dimensions_are_one_hundred_blocks(self) -> None:
+    def test_default_world_dimensions_are_one_thousand_by_one_thousand(self) -> None:
         world = VoxelWorld()
 
-        self.assertEqual(world.blocks.shape, (100, 100, 100))
+        self.assertEqual(world.blocks.shape, (1000, 100, 1000))
         self.assertGreater(int(world.surface_heights.max()), int(world.surface_heights.min()))
         self.assertEqual(
-            world.blocks[50, world.surface_height_at(50, 50), 50], BLOCK_GRASS
+            world.blocks[500, world.surface_height_at(500, 500), 500], BLOCK_GRASS
         )
-        self.assertEqual(world.blocks[50, 0, 50], BLOCK_STONE)
-        self.assertFalse(world.is_solid(100, 1, 99))
+        self.assertEqual(world.blocks[500, 0, 500], BLOCK_STONE)
+        self.assertFalse(world.is_solid(1000, 1, 999))
 
     def test_surface_has_grass_dirt_layers_and_deep_stone(self) -> None:
         world = VoxelWorld()
@@ -67,6 +72,11 @@ class VoxelWorldTests(unittest.TestCase):
         np.testing.assert_array_equal(
             first_world.surface_heights, second_world.surface_heights
         )
+        self.assertGreaterEqual(
+            int(first_world.surface_heights.max() - first_world.surface_heights.min()),
+            40,
+        )
+        self.assertGreater(float(first_world.surface_heights.std()), 4.0)
 
     def test_surface_height_rejects_out_of_bounds_coordinates(self) -> None:
         world = VoxelWorld(size=8)
@@ -80,15 +90,19 @@ class VoxelWorldTests(unittest.TestCase):
 
         self.assertEqual(world.blocks.shape, (8, 8, 8))
         self.assertGreater(len(mesh), 0)
-        self.assertEqual(mesh.shape[1], 10)
+        self.assertEqual(mesh.shape[1], 12)
         self.assertEqual(len(mesh) % 6, 0)
         self.assertTrue(world.is_solid(0, 0, 0))
         self.assertFalse(world.is_solid(-1, 0, 0))
         surface = world.surface_height_at(0, 0)
         self.assertFalse(world.is_solid(0, surface + 1, 0))
-        normals = mesh[:, 7:10]
+        normals = mesh[:, 9:12]
         self.assertTrue(np.all(np.isin(normals, (-1.0, 0.0, 1.0))))
         self.assertEqual(len(np.unique(normals, axis=0)), 6)
+        triangles = mesh.reshape(-1, 3, 12)
+        edges = triangles[:, 1:3, :3] - triangles[:, :1, :3]
+        winding = np.cross(edges[:, 0], edges[:, 1])
+        self.assertTrue(np.all(np.sum(winding * triangles[:, 0, 9:12], axis=1) > 0))
 
     def test_cached_chunk_mesh_updates_blocks_across_chunk_boundaries(self) -> None:
         world = VoxelWorld(size=32)
@@ -176,6 +190,83 @@ class VoxelWorldTests(unittest.TestCase):
         self.assertIn(TEXTURE_WOOD_SIDE, wood_vertices[:, 5])
         self.assertIn(TEXTURE_WOOD_TOP, wood_vertices[:, 5])
 
+    def test_glowstone_light_decreases_over_empty_blocks(self) -> None:
+        world = VoxelWorld(size=16)
+        y = int(world.surface_heights.max()) + 3
+        source = (8, y, 8)
+        world.set_block(source, BLOCK_GLOWSTONE)
+        world.set_block((7, y, 8), BLOCK_STONE)
+
+        mesh = world.build_mesh()
+
+        self.assertEqual(int(world._block_light_levels[source]), GLOWSTONE_LIGHT_LEVEL)
+        self.assertEqual(int(world._block_light_levels[7, y, 8]), 0)
+        self.assertEqual(int(world._block_light_levels[9, y, 8]), 11)
+        self.assertEqual(int(world._block_light_levels[10, y, 8]), 10)
+        source_vertices = mesh[
+            (mesh[:, 0] >= source[0])
+            & (mesh[:, 0] <= source[0] + 1)
+            & (mesh[:, 1] >= source[1])
+            & (mesh[:, 1] <= source[1] + 1)
+            & (mesh[:, 2] >= source[2])
+            & (mesh[:, 2] <= source[2] + 1)
+        ]
+        self.assertLess(float(source_vertices[:, 7].max()), 12 / 15)
+        self.assertGreater(float(source_vertices[:, 7].min()), 0.0)
+        self.assertLess(
+            float(source_vertices[:, 7].min()),
+            float(source_vertices[:, 7].max()),
+        )
+
+        world.set_block(source, 0)
+        world.build_mesh()
+        self.assertEqual(int(world._block_light_levels[9, y, 8]), 0)
+
+    def test_lantern_uses_its_texture_and_emits_light(self) -> None:
+        world = VoxelWorld(size=16)
+        y = int(world.surface_heights.max()) + 3
+        source = (8, y, 8)
+        world.set_block(source, BLOCK_LANTERN)
+
+        mesh = world.build_mesh()
+
+        self.assertIn(BLOCK_LANTERN, BLOCK_TYPES)
+        self.assertNotIn(BLOCK_LANTERN, HOTBAR_BLOCKS)
+        self.assertIn(TEXTURE_LANTERN, mesh[:, 5])
+        self.assertEqual(
+            int(world._block_light_levels[source]), GLOWSTONE_LIGHT_LEVEL
+        )
+        self.assertEqual(int(world._block_light_levels[9, y, 8]), 11)
+
+    def test_sunlight_reaches_open_sky_and_fades_under_a_roof(self) -> None:
+        world = VoxelWorld(size=8)
+        world.blocks.fill(0)
+        world.blocks[:, 5, :] = BLOCK_STONE
+        world.blocks[3, 5, 3] = 0
+
+        mesh = world.build_mesh()
+
+        self.assertEqual(int(world._sky_light_levels[0, 6, 0]), 15)
+        self.assertEqual(int(world._sky_light_levels[3, 4, 3]), 15)
+        self.assertEqual(int(world._sky_light_levels[4, 4, 3]), 14)
+        self.assertEqual(int(world._sky_light_levels[5, 4, 3]), 13)
+        self.assertEqual(int(world._sky_light_levels[6, 4, 3]), 12)
+
+        roof_vertices = mesh[
+            (mesh[:, 0] >= 0)
+            & (mesh[:, 0] <= 1)
+            & (mesh[:, 1] == 6)
+            & (mesh[:, 2] >= 0)
+            & (mesh[:, 2] <= 1)
+            & (mesh[:, 9] == 0)
+            & (mesh[:, 10] == 1)
+            & (mesh[:, 11] == 0)
+        ]
+        self.assertGreaterEqual(len(roof_vertices), 6)
+        np.testing.assert_array_equal(
+            roof_vertices[:, 8], np.ones(len(roof_vertices))
+        )
+
     def test_wood_board_is_available_in_hotbar_and_uses_its_texture(self) -> None:
         world = VoxelWorld(size=8)
         world.set_block((3, 4, 3), BLOCK_WOOD_BOARD)
@@ -215,9 +306,76 @@ class VoxelWorldTests(unittest.TestCase):
         self.assertTrue(world.set_block((3, empty_y, 3), 2))
         self.assertFalse(world.set_block((3, empty_y, 3), 2))
 
+    def test_block_count_tracks_added_replaced_and_removed_blocks(self) -> None:
+        world = VoxelWorld(size=8)
+        initial_count = int(np.count_nonzero(world.blocks))
+        self.assertEqual(world.block_count, initial_count)
+
+        empty_y = world.surface_height_at(3, 3) + 1
+        self.assertTrue(world.set_block((3, empty_y, 3), BLOCK_GRASS))
+        self.assertEqual(world.block_count, initial_count + 1)
+        self.assertTrue(world.set_block((3, empty_y, 3), BLOCK_STONE))
+        self.assertEqual(world.block_count, initial_count + 1)
+        self.assertTrue(world.set_block((3, empty_y, 3), 0))
+        self.assertEqual(world.block_count, initial_count)
+
+        original_block = int(world.blocks[0, 0, 0])
+        self.assertTrue(world.set_block((0, 0, 0), 0))
+        self.assertEqual(world.block_count, initial_count - 1)
+        self.assertTrue(world.set_block((0, 0, 0), original_block))
+        self.assertEqual(world.block_count, initial_count)
+
     def test_world_rejects_too_small_size(self) -> None:
         with self.assertRaises(ValueError):
             VoxelWorld(size=3)
+
+    def test_world_height_can_be_set_independently_of_surface_dimensions(self) -> None:
+        world = VoxelWorld(size=24, height=12)
+
+        self.assertEqual(world.blocks.shape, (24, 12, 24))
+        self.assertLess(int(world.surface_heights.max()), world.height)
+
+    def test_mesh_streaming_only_builds_chunks_near_requested_position(self) -> None:
+        world = VoxelWorld(size=64, height=16)
+
+        world.build_mesh((8.0, 8.0, 8.0), render_distance=8)
+        first_loaded_chunks = set(world._mesh_cache)
+        first_lighting_bounds = world._lighting_bounds
+        world.build_mesh((56.0, 8.0, 56.0), render_distance=8)
+
+        self.assertTrue(first_loaded_chunks)
+        self.assertTrue(set(world._mesh_cache).isdisjoint(first_loaded_chunks))
+        self.assertNotEqual(world._lighting_bounds, first_lighting_bounds)
+        self.assertLess(
+            world._lighting_bounds[1] - world._lighting_bounds[0], world.size
+        )
+        self.assertLess(
+            world._lighting_bounds[3] - world._lighting_bounds[2], world.size
+        )
+
+    def test_mesh_streaming_includes_new_blocks_in_previously_empty_chunks(self) -> None:
+        world = VoxelWorld(size=16, height=64)
+        elevated_chunk = (1, 7, 1)
+
+        self.assertTrue(world.set_block((8, 60, 8), BLOCK_STONE))
+        mesh = world.build_mesh((8.0, 60.0, 8.0), render_distance=8)
+
+        self.assertIn(elevated_chunk, world._active_mesh_chunks)
+        self.assertIn(elevated_chunk, world._mesh_cache)
+        self.assertGreater(len(mesh), 0)
+
+        self.assertTrue(world.set_block((8, 60, 8), 0))
+        world.build_mesh((8.0, 60.0, 8.0), render_distance=8)
+        self.assertNotIn(elevated_chunk, world._active_mesh_chunks)
+
+    def test_fully_enclosed_solid_chunks_do_not_generate_meshes(self) -> None:
+        world = VoxelWorld(size=24, height=24)
+        world.blocks.fill(BLOCK_STONE)
+
+        self.assertEqual(len(world._build_chunk_mesh((1, 1, 1))), 0)
+
+        world.blocks[7, 8, 8] = 0
+        self.assertGreater(len(world._build_chunk_mesh((1, 1, 1))), 0)
 
 
 class PlayerTests(unittest.TestCase):
@@ -306,6 +464,12 @@ class HotbarTests(unittest.TestCase):
         self.app._on_scroll(None, 0.0, -1.0)
         self.assertEqual(self.app.selected_hotbar_slot, 2)
 
+    def test_zero_selects_the_tenth_glowstone_slot(self) -> None:
+        self.app._on_key(None, glfw.KEY_0, 0, glfw.PRESS, 0)
+
+        self.assertEqual(self.app.selected_hotbar_slot, 9)
+        self.assertEqual(HOTBAR_BLOCKS[self.app.selected_hotbar_slot], BLOCK_GLOWSTONE)
+
     def test_f3_toggles_performance_overlay(self) -> None:
         self.assertFalse(self.app.show_performance_overlay)
 
@@ -390,6 +554,20 @@ class HotbarTests(unittest.TestCase):
         self.app.renderer.update_mesh.assert_called_once()
 
     @patch.object(Player, "intersects_block", return_value=False)
+    def test_tenth_hotbar_slot_places_glowstone(
+        self, _intersects_block: Mock
+    ) -> None:
+        world = self.app.world
+        assert world is not None
+        adjacent_block = (10, 2, 10)
+        world.raycast = Mock(return_value=((10, 1, 10), adjacent_block))
+        self.app._on_key(None, glfw.KEY_0, 0, glfw.PRESS, 0)
+        self.app._on_mouse_button(None, glfw.MOUSE_BUTTON_RIGHT, glfw.PRESS, 0)
+
+        self.assertEqual(world.blocks[adjacent_block], BLOCK_GLOWSTONE)
+        self.app.renderer.update_mesh.assert_called_once()
+
+    @patch.object(Player, "intersects_block", return_value=False)
     def test_placing_grass_on_grass_turns_lower_block_into_dirt(
         self, _intersects_block: Mock
     ) -> None:
@@ -425,6 +603,265 @@ class HotbarTests(unittest.TestCase):
         self.assertEqual(world.blocks[placed_block], BLOCK_SAND)
         self.assertEqual(world.blocks[lower_block], BLOCK_DIRT)
         self.app.renderer.update_mesh.assert_called_once()
+
+
+class InventoryTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.app = Application()
+        self.app.window = Mock()
+        set_input_mode = patch("engine.application.glfw.set_input_mode")
+        set_input_mode.start()
+        self.addCleanup(set_input_mode.stop)
+
+    def test_i_opens_inventory_and_escape_closes_it(self) -> None:
+        self.app._on_key(None, glfw.KEY_I, 0, glfw.PRESS, 0)
+        self.assertTrue(self.app.inventory_open)
+        self.assertFalse(self.app.menu_open)
+
+        self.app._on_key(None, glfw.KEY_ESCAPE, 0, glfw.PRESS, 0)
+        self.assertFalse(self.app.inventory_open)
+        self.assertFalse(self.app.menu_open)
+
+    def test_number_keys_switch_inventory_tabs_without_changing_hotbar(self) -> None:
+        self.app._on_key(None, glfw.KEY_I, 0, glfw.PRESS, 0)
+        self.app._on_key(None, glfw.KEY_2, 0, glfw.PRESS, 0)
+        self.assertEqual(self.app.inventory_tab, 1)
+        self.assertEqual(self.app.selected_hotbar_slot, 0)
+
+        self.app._on_key(None, glfw.KEY_1, 0, glfw.PRESS, 0)
+        self.assertEqual(self.app.inventory_tab, 0)
+
+    def test_inventory_tabs_are_mouse_selectable(self) -> None:
+        for expected_tab, bounds in enumerate(Hud._inventory_tab_bounds(1280, 720)):
+            x, y, width, height = bounds
+            self.assertEqual(
+                Hud.inventory_tab_at(1280, 720, x + width / 2, y + height / 2),
+                expected_tab,
+            )
+        self.assertIsNone(Hud.inventory_tab_at(1280, 720, 0, 0))
+
+    def test_inventory_tabs_render_with_all_block_labels(self) -> None:
+        with patch.object(Hud, "_rectangle"):
+            Hud.draw_inventory(1280, 720, 0)
+            Hud.draw_inventory(1280, 720, 1)
+            Hud.draw_inventory(640, 360, 1)
+
+    @patch("engine.application.glfw.get_cursor_pos")
+    @patch("engine.application.glfw.get_window_size", return_value=(1280, 720))
+    @patch("engine.application.glfw.get_framebuffer_size", return_value=(1280, 720))
+    def test_dragging_hotbar_block_swaps_slots(
+        self,
+        _framebuffer_size: Mock,
+        _window_size: Mock,
+        cursor_position: Mock,
+    ) -> None:
+        self.app._open_inventory()
+        original_blocks = self.app.hotbar_blocks.copy()
+        slot_bounds = Hud._inventory_hotbar_slot_bounds(1280, 720)
+        source = slot_bounds[0]
+        destination = slot_bounds[3]
+        cursor_position.return_value = (
+            source[0] + source[2] // 2,
+            720 - source[1] - source[3] // 2,
+        )
+        self.app._on_mouse_button(
+            self.app.window, glfw.MOUSE_BUTTON_LEFT, glfw.PRESS, 0
+        )
+
+        cursor_position.return_value = (
+            destination[0] + destination[2] // 2,
+            720 - destination[1] - destination[3] // 2,
+        )
+        self.app._on_mouse_button(
+            self.app.window, glfw.MOUSE_BUTTON_LEFT, glfw.RELEASE, 0
+        )
+
+        self.assertEqual(self.app.hotbar_blocks[0], original_blocks[3])
+        self.assertEqual(self.app.hotbar_blocks[3], original_blocks[0])
+        self.assertEqual(self.app.selected_hotbar_slot, 3)
+        self.assertIsNone(self.app._inventory_drag_source)
+        self.assertIsNone(self.app._inventory_drag_block)
+
+    def test_inventory_hotbar_bounds_match_all_block_slots(self) -> None:
+        bounds = Hud._inventory_hotbar_slot_bounds(1280, 720)
+
+        self.assertEqual(len(bounds), len(HOTBAR_BLOCKS))
+        for index, slot in enumerate(bounds):
+            x, y, width, height = slot
+            self.assertEqual(
+                Hud.inventory_hotbar_slot_at(
+                    1280, 720, x + width // 2, y + height // 2
+                ),
+                index,
+            )
+
+    def test_lantern_is_in_the_block_catalog(self) -> None:
+        self.assertEqual(BLOCK_TYPES[-1], BLOCK_LANTERN)
+        self.assertNotIn(BLOCK_LANTERN, HOTBAR_BLOCKS)
+        self.assertEqual(Hud._INVENTORY_BLOCK_NAMES[-1], "ФОНАРЬ")
+
+    def test_game_hud_draws_only_current_hotbar_blocks(self) -> None:
+        drawn_blocks: list[int] = []
+        with (
+            patch.object(Hud, "_rectangle"),
+            patch.object(
+                Hud,
+                "_draw_block_texture_icon",
+                side_effect=lambda _x, _y, _size, _scale, block: drawn_blocks.append(
+                    block
+                ),
+            ),
+        ):
+            Hud._draw_hotbar(0, 0, 20, 2, 1, 0, list(HOTBAR_BLOCKS))
+
+        self.assertEqual(drawn_blocks, list(HOTBAR_BLOCKS))
+        self.assertNotIn(BLOCK_LANTERN, drawn_blocks)
+
+    def test_block_icon_draws_a_crisp_eight_by_eight_texture_sample(self) -> None:
+        rectangles: list[tuple[int, int, int, int, tuple[float, float, float]]] = []
+        with patch.object(
+            Hud, "_rectangle", side_effect=lambda *rectangle: rectangles.append(rectangle)
+        ):
+            Hud._draw_block_texture_icon(0, 0, 20, 1, BLOCK_LANTERN)
+
+        self.assertEqual(len(rectangles), 64)
+        self.assertTrue(all(rectangle[2:4] == (2, 2) for rectangle in rectangles))
+        self.assertGreater(len({rectangle[4] for rectangle in rectangles}), 1)
+
+    def test_inventory_slots_use_small_block_texture_icons(self) -> None:
+        with (
+            patch.object(Hud, "_rectangle"),
+            patch.object(Hud, "_draw_menu_text"),
+            patch.object(Hud, "_draw_block_texture_icon") as draw_icon,
+        ):
+            Hud.draw_inventory(
+                1280,
+                720,
+                0,
+                HOTBAR_BLOCKS,
+                0,
+                [BLOCK_LANTERN] + [None] * 26,
+            )
+            inventory_icons = [
+                call.args[-1] for call in draw_icon.call_args_list
+            ]
+            self.assertIn(BLOCK_LANTERN, inventory_icons)
+
+            draw_icon.reset_mock()
+            Hud.draw_inventory(1280, 720, 1, HOTBAR_BLOCKS)
+            catalog_icons = [
+                call.args[-1] for call in draw_icon.call_args_list
+            ]
+
+        self.assertEqual(catalog_icons, [*BLOCK_TYPES, *HOTBAR_BLOCKS])
+
+    @patch("engine.application.glfw.get_cursor_pos")
+    @patch("engine.application.glfw.get_window_size", return_value=(1280, 720))
+    @patch("engine.application.glfw.get_framebuffer_size", return_value=(1280, 720))
+    def test_lantern_can_be_dragged_from_catalog_to_hotbar(
+        self,
+        _framebuffer_size: Mock,
+        _window_size: Mock,
+        cursor_position: Mock,
+    ) -> None:
+        self.app._open_inventory()
+        self.app.inventory_tab = 1
+        catalog_slot = Hud._inventory_storage_slot_bounds(1280, 720)[10]
+        hotbar_slot = Hud._inventory_hotbar_slot_bounds(1280, 720)[9]
+
+        cursor_position.return_value = (
+            catalog_slot[0] + catalog_slot[2] // 2,
+            720 - catalog_slot[1] - catalog_slot[3] // 2,
+        )
+        self.app._on_mouse_button(
+            self.app.window, glfw.MOUSE_BUTTON_LEFT, glfw.PRESS, 0
+        )
+        cursor_position.return_value = (
+            hotbar_slot[0] + hotbar_slot[2] // 2,
+            720 - hotbar_slot[1] - hotbar_slot[3] // 2,
+        )
+        self.app._on_mouse_button(
+            self.app.window, glfw.MOUSE_BUTTON_LEFT, glfw.RELEASE, 0
+        )
+
+        self.assertEqual(self.app.hotbar_blocks[9], BLOCK_LANTERN)
+        self.assertEqual(self.app.selected_hotbar_slot, 9)
+        self.assertEqual(self.app._inventory_carried_block, BLOCK_GLOWSTONE)
+
+    @patch("engine.application.glfw.get_cursor_pos")
+    @patch("engine.application.glfw.get_window_size", return_value=(1280, 720))
+    @patch("engine.application.glfw.get_framebuffer_size", return_value=(1280, 720))
+    def test_catalog_block_can_be_carried_into_inventory(
+        self,
+        _framebuffer_size: Mock,
+        _window_size: Mock,
+        cursor_position: Mock,
+    ) -> None:
+        self.app._open_inventory()
+        self.app.inventory_tab = 1
+
+        def click_at(x: int, y: int) -> None:
+            cursor_position.return_value = (x, 720 - y)
+            self.app._on_mouse_button(
+                self.app.window, glfw.MOUSE_BUTTON_LEFT, glfw.PRESS, 0
+            )
+            self.app._on_mouse_button(
+                self.app.window, glfw.MOUSE_BUTTON_LEFT, glfw.RELEASE, 0
+            )
+
+        catalog_x, catalog_y, catalog_width, catalog_height = (
+            Hud._inventory_storage_slot_bounds(1280, 720)[3]
+        )
+        click_at(
+            catalog_x + catalog_width // 2,
+            catalog_y + catalog_height // 2,
+        )
+        self.assertEqual(self.app._inventory_carried_block, BLOCK_SAND)
+
+        tab_x, tab_y, tab_width, tab_height = Hud._inventory_tab_bounds(1280, 720)[0]
+        click_at(tab_x + tab_width // 2, tab_y + tab_height // 2)
+        self.assertEqual(self.app.inventory_tab, 0)
+
+        slot_x, slot_y, slot_width, slot_height = (
+            Hud._inventory_storage_slot_bounds(1280, 720)[0]
+        )
+        click_at(slot_x + slot_width // 2, slot_y + slot_height // 2)
+        self.assertEqual(self.app.inventory_slots[0], BLOCK_SAND)
+        self.assertIsNone(self.app._inventory_carried_block)
+
+    @patch("engine.application.glfw.get_cursor_pos")
+    @patch("engine.application.glfw.get_window_size", return_value=(1280, 720))
+    @patch("engine.application.glfw.get_framebuffer_size", return_value=(1280, 720))
+    def test_catalog_block_can_be_dragged_directly_to_hotbar(
+        self,
+        _framebuffer_size: Mock,
+        _window_size: Mock,
+        cursor_position: Mock,
+    ) -> None:
+        self.app._open_inventory()
+        self.app.inventory_tab = 1
+
+        catalog_slot = Hud._inventory_storage_slot_bounds(1280, 720)[3]
+        hotbar_slot = Hud._inventory_hotbar_slot_bounds(1280, 720)[6]
+        cursor_position.return_value = (
+            catalog_slot[0] + catalog_slot[2] // 2,
+            720 - catalog_slot[1] - catalog_slot[3] // 2,
+        )
+        self.app._on_mouse_button(
+            self.app.window, glfw.MOUSE_BUTTON_LEFT, glfw.PRESS, 0
+        )
+
+        cursor_position.return_value = (
+            hotbar_slot[0] + hotbar_slot[2] // 2,
+            720 - hotbar_slot[1] - hotbar_slot[3] // 2,
+        )
+        self.app._on_mouse_button(
+            self.app.window, glfw.MOUSE_BUTTON_LEFT, glfw.RELEASE, 0
+        )
+
+        self.assertEqual(self.app.hotbar_blocks[6], BLOCK_SAND)
+        self.assertEqual(self.app.selected_hotbar_slot, 6)
+        self.assertEqual(self.app._inventory_carried_block, HOTBAR_BLOCKS[6])
 
 
 class PauseMenuTests(unittest.TestCase):
@@ -556,7 +993,7 @@ class PauseMenuTests(unittest.TestCase):
         get_cursor_pos: Mock,
     ) -> None:
         button_x, button_y, button_width, button_height = (
-            Hud._settings_choice_bounds(1280, 720, 2)[3]
+            Hud._settings_choice_bounds(1280, 720, 3)[3]
         )
         get_cursor_pos.return_value = (
             button_x + button_width / 2,
@@ -574,7 +1011,7 @@ class PauseMenuTests(unittest.TestCase):
         self.app.renderer.set_color_grade.assert_called_once_with(3)
 
     def test_color_grade_settings_cover_every_preset_without_back_overlap(self) -> None:
-        presets = Hud._settings_choice_bounds(1280, 720, 2)
+        presets = Hud._settings_choice_bounds(1280, 720, 3)
         self.assertEqual(len(presets), 4)
         for option, bounds in enumerate(presets):
             self.assertEqual(
@@ -584,7 +1021,7 @@ class PauseMenuTests(unittest.TestCase):
                     bounds[0] + bounds[2] / 2,
                     bounds[1] + bounds[3] / 2,
                 ),
-                (2, option),
+                (3, option),
             )
 
         back_bounds = Hud._settings_back_bounds(1280, 720)
@@ -595,13 +1032,13 @@ class PauseMenuTests(unittest.TestCase):
                 back_bounds[0] + back_bounds[2] / 2,
                 back_bounds[1] + back_bounds[3] / 2,
             ),
-            (4, 0),
+            (5, 0),
         )
 
         compact_back = Hud._settings_back_bounds(640, 360)
-        compact_last_preset = Hud._settings_choice_bounds(640, 360, 2)[-1]
+        compact_last_row = Hud._settings_choice_bounds(640, 360, 4)[0]
         self.assertLess(
-            compact_back[1] + compact_back[3], compact_last_preset[1]
+            compact_back[1] + compact_back[3], compact_last_row[1]
         )
 
     @patch("engine.application.glfw.get_cursor_pos")
@@ -614,7 +1051,7 @@ class PauseMenuTests(unittest.TestCase):
         get_cursor_pos: Mock,
     ) -> None:
         button_x, button_y, button_width, button_height = (
-            Hud._settings_choice_bounds(1280, 720, 3)[0]
+            Hud._settings_choice_bounds(1280, 720, 4)[0]
         )
         get_cursor_pos.return_value = (
             button_x + button_width / 2,
@@ -632,7 +1069,7 @@ class PauseMenuTests(unittest.TestCase):
         self.app.renderer.set_effects_enabled.assert_called_once_with(False)
 
     def test_effects_settings_row_maps_on_and_off(self) -> None:
-        choices = Hud._settings_choice_bounds(1280, 720, 3)
+        choices = Hud._settings_choice_bounds(1280, 720, 4)
         self.assertEqual(len(choices), 2)
         for option, bounds in enumerate(choices):
             self.assertEqual(
@@ -642,7 +1079,7 @@ class PauseMenuTests(unittest.TestCase):
                     bounds[0] + bounds[2] / 2,
                     bounds[1] + bounds[3] / 2,
                 ),
-                (3, option),
+                (4, option),
             )
 
     def test_color_grading_updates_sky_clear_color(self) -> None:
@@ -674,6 +1111,63 @@ class PauseMenuTests(unittest.TestCase):
             ),
             (1, 0),
         )
+
+    @patch("engine.application.glfw.get_cursor_pos")
+    @patch("engine.application.glfw.get_window_size", return_value=(1280, 720))
+    @patch("engine.application.glfw.get_framebuffer_size", return_value=(1280, 720))
+    def test_block_lighting_setting_is_independent_from_shadows(
+        self,
+        _framebuffer_size: Mock,
+        _window_size: Mock,
+        get_cursor_pos: Mock,
+    ) -> None:
+        button_x, button_y, button_width, button_height = (
+            Hud._settings_choice_bounds(1280, 720, 2)[0]
+        )
+        get_cursor_pos.return_value = (
+            button_x + button_width / 2,
+            720 - button_y - button_height / 2,
+        )
+        self.app.menu_open = True
+        self.app.settings_open = True
+        self.app.renderer = Mock()
+
+        self.app._on_mouse_button(
+            self.app.window, glfw.MOUSE_BUTTON_LEFT, glfw.PRESS, 0
+        )
+
+        self.assertFalse(self.app.block_lighting_enabled)
+        self.assertEqual(self.app.shadow_quality, 1)
+        self.app.renderer.set_block_lighting_enabled.assert_called_once_with(False)
+        self.app.renderer.set_shadow_quality.assert_not_called()
+
+    def test_block_lighting_settings_row_maps_on_and_off(self) -> None:
+        choices = Hud._settings_choice_bounds(1280, 720, 2)
+        self.assertEqual(len(choices), 2)
+        for option, bounds in enumerate(choices):
+            self.assertEqual(
+                Hud.settings_option_at(
+                    1280,
+                    720,
+                    bounds[0] + bounds[2] / 2,
+                    bounds[1] + bounds[3] / 2,
+                ),
+                (2, option),
+            )
+
+    def test_settings_page_draws_block_lighting_toggle(self) -> None:
+        with (
+            patch.object(Hud, "_rectangle"),
+            patch.object(Hud, "_draw_menu_text") as draw_menu_text,
+        ):
+            Hud._draw_settings(1280, 720, 1, 1, True, 0, True)
+
+        self.assertIn(
+            "БЛОЧНЫЙ СВЕТ",
+            tuple(call.args[0] for call in draw_menu_text.call_args_list),
+        )
+        with patch.object(Hud, "_rectangle"):
+            Hud._draw_menu_text("БЛОЧНЫЙ СВЕТ", 640, 100, 1, (1.0, 1.0, 1.0))
 
     @patch("engine.application.glfw.get_cursor_pos", return_value=(640.0, 306.0))
     @patch("engine.application.glfw.get_window_size", return_value=(1280, 720))

@@ -43,12 +43,12 @@ float value_noise(vec3 point)
 float cloud_noise(vec3 point)
 {
     float total = 0.0;
-    float amplitude = 0.55;
-    for (int octave = 0; octave < 2; ++octave)
+    float amplitude = 0.7;
+    for (int octave = 0; octave < 3; ++octave)
     {
         total += value_noise(point) * amplitude;
         point = point * 2.03 + vec3(13.7, 7.1, 5.3);
-        amplitude *= 0.5;
+        amplitude *= 0.38;
     }
     return total;
 }
@@ -73,17 +73,23 @@ void main()
 
     if (u_effects_enabled != 0)
     {
-        vec3 cloud_position = ray * 15.0
+        vec3 cloud_position = ray * 10.0
             + vec3(u_time * 0.012, u_time * 0.004, -u_time * 0.008);
         float clouds = cloud_noise(cloud_position);
-        float cloud_coverage = smoothstep(0.51, 0.72, clouds)
+        float cloud_coverage = smoothstep(0.51, 0.69, clouds)
             * smoothstep(0.04, 0.25, ray.y);
-        float cloud_light = 0.72 + 0.28 * max(dot(ray, u_sun_direction), 0.0);
-        sky_color = mix(
-            sky_color,
-            vec3(cloud_light, cloud_light * 0.99, cloud_light * 0.96),
-            cloud_coverage * 0.92
+        float cloud_shadow = smoothstep(0.52, 0.68, clouds);
+        float cloud_light = 0.50
+            + 0.50 * max(dot(ray, u_sun_direction), 0.0);
+        vec3 cloud_color = mix(
+            vec3(0.43, 0.51, 0.66),
+            vec3(1.0, 0.97, 0.91),
+            cloud_light * (0.55 + 0.45 * cloud_shadow)
         );
+        sky_color = mix(sky_color, cloud_color, cloud_coverage * 0.94);
+
+        float horizon_fog = 1.0 - smoothstep(0.0, 0.24, abs(ray.y));
+        sky_color = mix(sky_color, vec3(0.58, 0.72, 0.86), horizon_fog * 0.58);
     }
 
     if (u_color_grade == 1)

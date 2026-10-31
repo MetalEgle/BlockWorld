@@ -5,6 +5,8 @@ layout (location = 1) in vec2 a_uv;
 layout (location = 2) in float a_texture_layer;
 layout (location = 3) in float a_face_brightness;
 layout (location = 4) in vec3 a_normal;
+layout (location = 5) in float a_block_light;
+layout (location = 6) in float a_sky_light;
 
 uniform mat4 u_mvp;
 uniform mat4 u_light_mvp;
@@ -14,6 +16,8 @@ uniform vec3 u_outline_offset;
 out vec2 vertex_uv;
 flat out int texture_layer;
 out float face_brightness;
+out float block_light;
+out float sky_light;
 out vec3 world_normal;
 out vec3 world_position;
 out vec4 light_position;
@@ -30,6 +34,8 @@ void main()
     vertex_uv = a_uv;
     texture_layer = int(a_texture_layer);
     face_brightness = a_face_brightness;
+    block_light = a_block_light;
+    sky_light = a_sky_light;
     world_normal = a_normal;
     world_position = a_position;
 }

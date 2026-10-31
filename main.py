@@ -1,8 +1,7 @@
-
 from engine.application import Application
-
-
 def main() -> None:
+    
+
     app = Application()
     app.run()
 

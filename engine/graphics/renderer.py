@@ -5,6 +5,7 @@ import numpy as np
 from OpenGL.GL import (
     GL_ARRAY_BUFFER,
     GL_CLAMP_TO_EDGE,
+    GL_CULL_FACE,
     GL_DEPTH_ATTACHMENT,
     GL_DEPTH_COMPONENT,
     GL_DEPTH_COMPONENT24,
@@ -88,6 +89,7 @@ from engine.diagnostics import PerformanceStats
 from engine.graphics.hud import Hud
 from engine.world.voxel_world import (
     CHUNK_SIZE,
+    HOTBAR_BLOCKS,
     TEXTURE_DIRT,
     TEXTURE_GRASS_SIDE,
     TEXTURE_GRASS_TOP,
@@ -99,6 +101,7 @@ from engine.world.voxel_world import (
     TEXTURE_WOOD_SIDE,
     TEXTURE_WOOD_TOP,
     TEXTURE_WOOD_BOARD,
+    TEXTURE_LANTERN,
 )
 
 _TEXTURE_FILES = (
@@ -113,6 +116,7 @@ _TEXTURE_FILES = (
     "Wood_Side.jfif",
     "Wood_Top.jfif",
     "Wood_Board.jfif",
+    "Lighter.jfif",
 )
 
 _TEXTURE_LAYERS = (
@@ -127,6 +131,7 @@ _TEXTURE_LAYERS = (
     TEXTURE_WOOD_SIDE,
     TEXTURE_WOOD_TOP,
     TEXTURE_WOOD_BOARD,
+    TEXTURE_LANTERN,
 )
 
 _SUN_DIRECTION = np.asarray((0.65, 1.5, 0.65), dtype=np.float32)
@@ -134,7 +139,7 @@ _SUN_DIRECTION /= np.linalg.norm(_SUN_DIRECTION)
 
 
 class Renderer:
-    _SHADOW_RESOLUTIONS = (512, 512, 1024)
+    _SHADOW_RESOLUTIONS = (512, 1024, 2048)
 
     def __init__(self, vertices: np.ndarray, surface_heights: np.ndarray) -> None:
         self._program = 0
@@ -166,6 +171,7 @@ class Renderer:
         self._blur_texel_size_location = -1
         self._light_mvp_location = -1
         self._shadow_enabled_location = -1
+        self._block_lighting_enabled_location = -1
         self._sun_direction_location = -1
         self._outline_location = -1
         self._outline_offset_location = -1
@@ -183,6 +189,7 @@ class Renderer:
         self._shadow_map_dirty = True
         self.texture_quality = 1
         self.shadow_quality = 1
+        self.block_lighting_enabled = True
         self.color_grade = 0
         self.effects_enabled = True
 
@@ -206,6 +213,9 @@ class Renderer:
             )
             self._shadow_enabled_location = glGetUniformLocation(
                 self._program, "u_shadows_enabled"
+            )
+            self._block_lighting_enabled_location = glGetUniformLocation(
+                self._program, "u_block_lighting_enabled"
             )
             self._sun_direction_location = glGetUniformLocation(
                 self._program, "u_sun_direction"
@@ -344,7 +354,7 @@ class Renderer:
             glBindBuffer(GL_ARRAY_BUFFER, self._vertex_buffer)
             glBufferData(GL_ARRAY_BUFFER, vertices.nbytes, vertices, GL_STATIC_DRAW)
 
-            stride = 10 * vertices.itemsize
+            stride = 12 * vertices.itemsize
             glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride, None)
             glEnableVertexAttribArray(0)
             glVertexAttribPointer(
@@ -380,9 +390,27 @@ class Renderer:
                 GL_FLOAT,
                 GL_FALSE,
                 stride,
-                c_void_p(7 * vertices.itemsize),
+                c_void_p(9 * vertices.itemsize),
             )
             glEnableVertexAttribArray(4)
+            glVertexAttribPointer(
+                5,
+                1,
+                GL_FLOAT,
+                GL_FALSE,
+                stride,
+                c_void_p(7 * vertices.itemsize),
+            )
+            glEnableVertexAttribArray(5)
+            glVertexAttribPointer(
+                6,
+                1,
+                GL_FLOAT,
+                GL_FALSE,
+                stride,
+                c_void_p(8 * vertices.itemsize),
+            )
+            glEnableVertexAttribArray(6)
             glBindBuffer(GL_ARRAY_BUFFER, 0)
             glBindVertexArray(0)
             glEnable(GL_DEPTH_TEST)
@@ -507,6 +535,10 @@ class Renderer:
             self._light_mvp_location, 1, GL_FALSE, self._shadow_matrix.flatten(order="F")
         )
         glUniform1i(self._shadow_enabled_location, int(self.shadow_quality > 0))
+        glUniform1i(
+            self._block_lighting_enabled_location,
+            int(self.block_lighting_enabled),
+        )
         glUniform1i(self._outline_location, 0)
         glUniform1i(self._color_grade_location, self.color_grade)
         glUniform1i(self._effects_enabled_location, int(self.effects_enabled))
@@ -527,9 +559,13 @@ class Renderer:
         glBindTexture(GL_TEXTURE_2D_ARRAY, self._texture_array)
         glActiveTexture(GL_TEXTURE0 + 1)
         glBindTexture(GL_TEXTURE_2D, self._shadow_texture)
-        glBindVertexArray(self._vertex_array)
-        glDrawArrays(GL_TRIANGLES, 0, self._vertex_count)
-        glBindVertexArray(0)
+        glEnable(GL_CULL_FACE)
+        try:
+            glBindVertexArray(self._vertex_array)
+            glDrawArrays(GL_TRIANGLES, 0, self._vertex_count)
+        finally:
+            glBindVertexArray(0)
+            glDisable(GL_CULL_FACE)
         if show_chunk_grid and self._chunk_grid_vertex_count:
             glUniform1i(self._outline_location, 1)
             glUniform3f(self._outline_offset_location, 0.0, 0.0, 0.0)
@@ -780,6 +816,9 @@ class Renderer:
         self.shadow_quality = quality
         self._shadow_map_dirty = True
 
+    def set_block_lighting_enabled(self, enabled: bool) -> None:
+        self.block_lighting_enabled = enabled
+
     def set_color_grade(self, grade: int) -> None:
         if grade not in (0, 1, 2, 3):
             raise ValueError(f"Неизвестный вариант цветокоррекции: {grade}.")
@@ -872,8 +911,33 @@ class Renderer:
         glBindBuffer(GL_ARRAY_BUFFER, 0)
 
     @staticmethod
-    def draw_hud(width: int, height: int, selected_slot: int) -> None:
-        Hud.draw(width, height, selected_slot)
+    def draw_hud(
+        width: int,
+        height: int,
+        selected_slot: int,
+        hotbar_blocks: tuple[int | None, ...] | list[int | None] = HOTBAR_BLOCKS,
+    ) -> None:
+        Hud.draw(width, height, selected_slot, hotbar_blocks)
+
+    @staticmethod
+    def draw_inventory(
+        width: int,
+        height: int,
+        selected_tab: int,
+        hotbar_blocks: tuple[int | None, ...] | list[int | None] = HOTBAR_BLOCKS,
+        selected_slot: int = 0,
+        inventory_slots: tuple[int | None, ...] | list[int | None] = (),
+        carried_block: int | None = None,
+    ) -> None:
+        Hud.draw_inventory(
+            width,
+            height,
+            selected_tab,
+            hotbar_blocks,
+            selected_slot,
+            inventory_slots,
+            carried_block,
+        )
 
     def draw_debug_overlay(
         self,
@@ -904,6 +968,7 @@ class Renderer:
         hovered_button: int | None = None,
         texture_quality: int = 1,
         shadow_quality: int = 1,
+        block_lighting_enabled: bool = True,
         color_grade: int = 0,
         effects_enabled: bool = True,
     ) -> None:
@@ -915,6 +980,7 @@ class Renderer:
             hovered_button,
             texture_quality,
             shadow_quality,
+            block_lighting_enabled,
             color_grade,
             effects_enabled,
         )
